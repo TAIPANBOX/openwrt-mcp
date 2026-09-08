@@ -49,21 +49,43 @@ jobs:
   # installable at all. This job builds the .apk and then does the thing the .ipk job
   # cannot: it installs the package with OpenWrt's own apk, inside OpenWrt's own
   # published rootfs, and checks the router is left in the state the .ipk leaves.
+  #
+  # Both architectures, because they fail differently. x86_64 is native on the runner and
+  # is the fast signal; aarch64 is what a router actually is, and it needs QEMU here.
   apk:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - apk_arch: x86_64
+            goarch: amd64
+            image: openwrt/rootfs:x86-64-25.12.4
+            platform: linux/amd64
+          - apk_arch: aarch64_generic
+            goarch: arm64
+            image: openwrt/rootfs:aarch64_generic-25.12.4
+            # OpenWrt publishes its OCI platform string as the package architecture, so
+            # the usual "linux/arm64" finds no manifest at all for this one.
+            platform: linux/aarch64_generic
+    env:
+      ROOTFS_IMAGE: ${{ matrix.image }}
+      PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
-      # aarch64_generic rather than the aarch64_cortex-a53 a Flint 2 reports, because
-      # that is the architecture of the rootfs image the gate installs into. The two
-      # differ only in compiler tuning; the packaging is identical.
-      - name: build both packages
+      # The runner is x86_64. Without this, running the aarch64 rootfs dies with
+      # "exec /bin/sh: exec format error" before a single check has been made.
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.goarch != 'amd64'
+
+      - name: build both packages for ${{ matrix.apk_arch }}
         run: |
-          make ipk IPK_ARCH=aarch64_generic
-          make apk APK_ARCH=aarch64_generic
+          make ipk ARCH=${{ matrix.goarch }} IPK_ARCH=${{ matrix.apk_arch }}
+          make apk ARCH=${{ matrix.goarch }} APK_ARCH=${{ matrix.apk_arch }}
 
       # Cheap, and it fails for a reason a reader can act on, so it goes first.
       - name: every scenario is bound to a check, and back
@@ -78,32 +100,36 @@ jobs:
       - name: the gate has teeth
         run: |
           set -eu
+          V=$(sed -n 's/^var version = "\(.*\)"/\1/p' main.go)
+          BIN=openwrt-mcp.${{ matrix.goarch }}
+          A=${{ matrix.apk_arch }}
           expect_red() {
-            name=$1; shift
+            want=$2
             if ./scripts/gate-apk-parity.sh > /tmp/teeth.out 2>&1; then
-              echo "TEETH FAIL: $name did not make the gate go red"; cat /tmp/teeth.out; exit 1
+              echo "TEETH FAIL: $1 did not make the gate go red"; cat /tmp/teeth.out; exit 1
             fi
-            grep -q "$1" /tmp/teeth.out || {
-              echo "TEETH FAIL: $name went red, but not at the expected check ($1)"; cat /tmp/teeth.out; exit 1; }
-            echo "teeth ok: $name -> $1"
+            grep -q "$want" /tmp/teeth.out || {
+              echo "TEETH FAIL: $1 went red, but not at $want"; cat /tmp/teeth.out; exit 1; }
+            echo "teeth ok: $1 -> $want"
           }
           # A missing keep.d entry means a firmware upgrade silently drops the package.
           sed '/keep.d\/\$PKG"$/d' mkapk.sh > mkapk.fault.sh && chmod +x mkapk.fault.sh
-          ./mkapk.fault.sh openwrt-mcp.arm64 "$(sed -n 's/^var version = "\(.*\)"/\1/p' main.go)" aarch64_generic
-          expect_red "keep.d dropped" "check_path_parity"
-          # No post-install means the service is never enabled and the router reboots idle.
+          ./mkapk.fault.sh "$BIN" "$V" "$A" >/dev/null
+          expect_red "keep.d dropped" check_path_parity
+          # No post-install means the service is never enabled and the router boots idle.
           sed '/--script "post-install/d' mkapk.sh > mkapk.fault.sh && chmod +x mkapk.fault.sh
-          ./mkapk.fault.sh openwrt-mcp.arm64 "$(sed -n 's/^var version = "\(.*\)"/\1/p' main.go)" aarch64_generic
-          expect_red "post-install omitted" "check_service_enabled"
-          # A wrong architecture installs a binary the router cannot execute.
-          make apk APK_ARCH=x86_64
-          expect_red "wrong architecture" "check_installs"
+          ./mkapk.fault.sh "$BIN" "$V" "$A" >/dev/null
+          expect_red "post-install omitted" check_service_enabled
+          # A wrong architecture installs a binary the router cannot execute. Any arch
+          # that is not this leg's will do; mips_24kc is nobody's x86 or arm router.
+          ./mkapk.sh "$BIN" "$V" mips_24kc >/dev/null
+          expect_red "wrong architecture" check_installs
           rm -f mkapk.fault.sh
           # And green again, so the reds above were the faults and not the harness.
-          make apk APK_ARCH=aarch64_generic
+          ./mkapk.sh "$BIN" "$V" "$A" >/dev/null
           ./scripts/gate-apk-parity.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openwrt-mcp-apk
+          name: openwrt-mcp-apk-${{ matrix.apk_arch }}
           path: openwrt-mcp-*.apk
