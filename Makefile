@@ -43,7 +43,24 @@ install-ipk: ipk
 	ssh $(ROUTER) 'cat > /tmp/openwrt-mcp.ipk' < openwrt-mcp_$(VERSION)_$(or $(IPK_ARCH),aarch64_cortex-a53).ipk
 	ssh $(ROUTER) 'opkg install --force-reinstall /tmp/openwrt-mcp.ipk && rm -f /tmp/openwrt-mcp.ipk'
 
-clean:
-	rm -f openwrt-mcp openwrt-mcp.* *.ipk
+# OpenWrt 25.12 replaced opkg with apk, so a router on a current release needs this one
+# instead. The two packages carry the same tree; scripts/gate-apk-parity.sh asserts it.
+apk: build
+	./mkapk.sh openwrt-mcp.$(ARCH) $(VERSION) $(APK_ARCH)
 
-.PHONY: test build install stage ipk install-ipk clean
+# apk refuses an unsigned local file unless told not to. Signing belongs to a repository
+# index rather than to a package, and OpenWrt's own package build does not sign either,
+# so an unsigned package here is what the feed would produce, not a corner cut.
+install-apk: apk
+	ssh $(ROUTER) 'cat > /tmp/openwrt-mcp.apk' < openwrt-mcp-$(VERSION)-r$(or $(PKGREL),1).apk
+	ssh $(ROUTER) 'apk add --allow-untrusted /tmp/openwrt-mcp.apk && rm -f /tmp/openwrt-mcp.apk'
+
+# Installs the .apk into a real OpenWrt 25.12 rootfs and checks it leaves the same state
+# the .ipk does. Needs docker; builds both packages first.
+gate-apk: ipk apk
+	./scripts/gate-apk-parity.sh
+
+clean:
+	rm -f openwrt-mcp openwrt-mcp.* *.ipk *.apk
+
+.PHONY: test build install stage ipk install-ipk apk install-apk gate-apk clean
