@@ -9,8 +9,24 @@ inspect and change it over an SSH tunnel.
 
 Developed against **GL.iNet** routers — verified on a Flint 2, a Flint 4 (GL-BE14000,
 firmware 4.9.0, router mode) and a Slate 7 Pro (GL-BE10000, firmware 4.8.4, AP mode).
-GL.iNet firmware 4.x is OpenWrt 21.02 with `opkg`, which is what the `.ipk` targets. It
-should suit any `opkg`-based OpenWrt; stock OpenWrt 24.10+ moved to `apk` and is **untested**.
+GL.iNet firmware 4.x is OpenWrt 21.02 with `opkg`, which is what the `.ipk` targets, and it
+should suit any `opkg`-based OpenWrt including stock 24.10.
+
+Stock OpenWrt 25.12 replaced opkg with apk, so it needs the `.apk` that `make apk` builds
+instead. That package is installed and exercised on every CI run inside OpenWrt's own
+published rootfs image, by OpenWrt's own apk: `scripts/gate-apk-parity.sh` requires it to
+land the same files with the same modes as the `.ipk`, to enable the service, to leave a
+hand-edited `/etc/config/openwrt-mcp` alone across a reinstall, and to remove cleanly.
+What CI cannot show is aarch64 hardware, so a Flint 2 running vanilla 25.12 is still the
+last untested step.
+
+Two differences from the `.ipk` worth knowing before you install one:
+
+- `apk` refuses an unsigned local file, so installing by hand needs
+  `apk add --allow-untrusted ./openwrt-mcp-0.5.0-r1.apk`. Signing belongs to a repository
+  index rather than to a package, and OpenWrt's own package build does not sign either.
+- The filename carries no architecture. For `.ipk` it did; for `.apk` the architecture is
+  in the metadata, and `apk` refuses a package built for another one.
 
 The other OpenWrt MCP servers I could find run *off*-router — they SSH in from your
 workstation on every call. This one is resident: a single static Go binary under procd,
