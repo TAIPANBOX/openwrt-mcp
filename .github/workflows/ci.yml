@@ -44,3 +44,66 @@ jobs:
         with:
           name: openwrt-mcp-ipk
           path: openwrt-mcp_*.ipk
+
+  # OpenWrt 25.12 dropped opkg for apk, so from that release on the .ipk above is not
+  # installable at all. This job builds the .apk and then does the thing the .ipk job
+  # cannot: it installs the package with OpenWrt's own apk, inside OpenWrt's own
+  # published rootfs, and checks the router is left in the state the .ipk leaves.
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # aarch64_generic rather than the aarch64_cortex-a53 a Flint 2 reports, because
+      # that is the architecture of the rootfs image the gate installs into. The two
+      # differ only in compiler tuning; the packaging is identical.
+      - name: build both packages
+        run: |
+          make ipk IPK_ARCH=aarch64_generic
+          make apk APK_ARCH=aarch64_generic
+
+      # Cheap, and it fails for a reason a reader can act on, so it goes first.
+      - name: every scenario is bound to a check, and back
+        run: ./scripts/gate-scenarios-bound.sh
+
+      - name: apk installs the package and leaves the same state opkg does
+        run: ./scripts/gate-apk-parity.sh
+
+      # A gate nobody has ever seen go red is a gate nobody has tested. Each fault below
+      # is one a real change could introduce, and each must be caught by a different
+      # check, or the gate is thinner than its list of checks suggests.
+      - name: the gate has teeth
+        run: |
+          set -eu
+          expect_red() {
+            name=$1; shift
+            if ./scripts/gate-apk-parity.sh > /tmp/teeth.out 2>&1; then
+              echo "TEETH FAIL: $name did not make the gate go red"; cat /tmp/teeth.out; exit 1
+            fi
+            grep -q "$1" /tmp/teeth.out || {
+              echo "TEETH FAIL: $name went red, but not at the expected check ($1)"; cat /tmp/teeth.out; exit 1; }
+            echo "teeth ok: $name -> $1"
+          }
+          # A missing keep.d entry means a firmware upgrade silently drops the package.
+          sed '/keep.d\/\$PKG"$/d' mkapk.sh > mkapk.fault.sh && chmod +x mkapk.fault.sh
+          ./mkapk.fault.sh openwrt-mcp.arm64 "$(sed -n 's/^var version = "\(.*\)"/\1/p' main.go)" aarch64_generic
+          expect_red "keep.d dropped" "check_path_parity"
+          # No post-install means the service is never enabled and the router reboots idle.
+          sed '/--script "post-install/d' mkapk.sh > mkapk.fault.sh && chmod +x mkapk.fault.sh
+          ./mkapk.fault.sh openwrt-mcp.arm64 "$(sed -n 's/^var version = "\(.*\)"/\1/p' main.go)" aarch64_generic
+          expect_red "post-install omitted" "check_service_enabled"
+          # A wrong architecture installs a binary the router cannot execute.
+          make apk APK_ARCH=x86_64
+          expect_red "wrong architecture" "check_installs"
+          rm -f mkapk.fault.sh
+          # And green again, so the reds above were the faults and not the harness.
+          make apk APK_ARCH=aarch64_generic
+          ./scripts/gate-apk-parity.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-mcp-apk
+          path: openwrt-mcp-*.apk
