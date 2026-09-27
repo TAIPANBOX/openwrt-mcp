@@ -17,8 +17,9 @@ instead. That package is installed and exercised on every CI run inside OpenWrt'
 published rootfs image, by OpenWrt's own apk: `scripts/gate-apk-parity.sh` requires it to
 land the same files with the same modes as the `.ipk`, to enable the service, to leave a
 hand-edited `/etc/config/openwrt-mcp` alone across a reinstall, and to remove cleanly.
-What CI cannot show is aarch64 hardware, so a Flint 2 running vanilla 25.12 is still the
-last untested step.
+What CI cannot show is aarch64 hardware. This apk was installed and exercised on a Flint 2
+and a Brume 2, both vanilla OpenWrt 25.12.5, aarch64, on 2026-09-27: paired a client,
+granted scoped policies, and removed cleanly afterward.
 
 Two differences from the `.ipk` worth knowing before you install one:
 
@@ -32,7 +33,7 @@ The other OpenWrt MCP servers I could find run *off*-router — they SSH in from
 workstation on every call. This one is resident: a single static Go binary under procd,
 always on, with its own authorisation and audit trail.
 
-It exposes seven generic tools rather than a hand-written catalogue of router features.
+It exposes nine generic tools rather than a hand-written catalogue of router features.
 `ubus list -v` already self-describes every object, method and argument signature on the
 box, so the agent discovers what your router can actually do instead of trusting a list
 that goes stale with each firmware update. On a GL.iNet box that means the vendor's own
@@ -369,6 +370,7 @@ Both were the first choice; neither works for a resident daemon.
 | `ubus_call` | `<object>.<method>` | The workhorse: netifd, wireless, dnsmasq, iwinfo, luci-rpc, `gl-*`. Replies over 8 KB have long arrays pruned — see Findings. |
 | `uci_apply` | `<config>.<section>.<option>`, or `<config>.<section>` for a section-level change | Stage → snapshot → commit → reload, rollback armed. Sets options, and creates or deletes whole sections. All scopes must be covered by one policy. |
 | `uci_confirm` | *(tool-level)* | Cancels the rollback timer. |
+| `uci_get` | `<config>`, `<config>.<section>` or `<config>.<section>.<option>` | Reads configuration as `config.section.option=value` lines, narrowed by config, section or option: the read path `uci_apply` lacks, safer than an exec shell for inspecting state first. A section- or option-level read is covered by a `<config>.*` grant; a whole-config read needs `<config>`. |
 | `exec` | `argv[0]` | Direct exec, **no shell** — no pipes, globs or redirection, and no quoting surface. |
 | `logread` | *(tool-level)* | Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions are not dropped. Returns the config **and a UTF-8 QR** to scan. Emits a private key — see below. |
