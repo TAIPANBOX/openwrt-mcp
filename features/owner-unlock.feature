@@ -189,3 +189,17 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
     When saving a PIN or a secret fails, the command reports the failure
     And when a factor's file is unreadable at startup, the daemon refuses to start
     But a file that becomes unreadable while running does not wipe the factors already loaded
+
+  # bound to: TestADaemonRefusesTheCodeThatActivatedASecret, TestASpentStepOnlyCountsForTheSecretItWasSpentOn
+  Scenario: the code typed to activate a secret is spent for the running daemon too
+    Given the owner activates a new secret with "openwrt-mcp mfa activate", outside the daemon
+    When the same code is sent to mfa_unlock within its acceptance span
+    Then the daemon refuses it, and the next code works
+    But a step spent on an older secret never blocks a newer one
+
+  # bound to: TestAClientsGatingPoliciesMustAgreeOnHowToUnlock
+  Scenario: one client's gating policies agree on how it unlocks
+    Given two enabled policies for one client that both gate tools
+    When they differ in mfa_factor, mfa_window, mfa_max_failures or mfa_lockout
+    Then the config does not load, and the error names the client and what differs
+    But a policy that gates nothing may say anything

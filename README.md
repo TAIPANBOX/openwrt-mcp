@@ -245,11 +245,13 @@ openwrt-mcp mfa activate claude-code 123456   # in force only if that code is va
 ```
 
 A plain `mfa enrol` makes the new secret live at once, so a QR that was never scanned (or
-scanned wrongly) leaves the client gated behind codes nobody can produce. With `--pending`
-the secret waits in `mfa.pending` and unlocks nothing; `mfa activate` moves it into force only
+scanned wrongly) leaves the client gated behind codes nobody can produce. With `--pending` the
+secret waits in `mfa.pending` and unlocks nothing; `mfa activate` moves it into force only
 after a code from the authenticator has proved it works, and refuses (keeping it pending) on a
 wrong, expired or missing code. Any secret already in force keeps working until then, so it is
-also the safe way to rotate. Without flags `mfa enrol` behaves exactly as it always did.
+also the safe way to rotate. Without flags `mfa enrol` behaves exactly as it always did. The
+code used to activate is recorded as spent in `mfa.used`, keyed to the new secret, so the
+running daemon refuses it too.
 
 #### Choosing the factor: a PIN, a code, or both
 
@@ -569,9 +571,6 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
   token: five wrong guesses deny the owner an unlock for `mfa_lockout`. It grants the guesser
   nothing, and the owner can lift it at once by setting a new PIN or re-enrolling, which
   closes the old window and clears the throttle on a running daemon.
-- A TOTP code used to activate a pending enrolment is spent in the CLI process, which the
-  daemon cannot see, so that one code can still be accepted once by the daemon inside its
-  90-second window.
 - Rate-limit windows are process-scoped, so a restart resets them — erring toward allowing
   what you already granted.
 - Tool output is capped at 64 KB, and ubus replies over 8 KB have arrays capped at 16

@@ -174,7 +174,47 @@ func LoadConfig(configPath string) (*Config, error) {
 			c.Policies = append(c.Policies, p)
 		}
 	}
+	if err := checkUnlockAgreement(c.Policies); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// checkUnlockAgreement refuses a config where one client has two enabled policies that gate
+// tools and disagree on how unlocking works. Unlocking is per client, not per policy: the
+// refusal from a gated tool names its own policy's factor, while mfa_unlock checks the first
+// gating policy's. Two that disagree would ask the owner for one thing and check another.
+func checkUnlockAgreement(policies []*Policy) error {
+	first := map[string]unlockPolicy{}
+	for _, p := range policies {
+		if !p.Enabled || len(p.MFATools) == 0 {
+			continue
+		}
+		got := p.unlockPolicy()
+		want, seen := first[p.Client]
+		if !seen {
+			first[p.Client] = got
+			continue
+		}
+		var differ []string
+		if got.Factor != want.Factor {
+			differ = append(differ, "mfa_factor")
+		}
+		if got.Window != want.Window {
+			differ = append(differ, "mfa_window")
+		}
+		if got.MaxFailures != want.MaxFailures {
+			differ = append(differ, "mfa_max_failures")
+		}
+		if got.Lockout != want.Lockout {
+			differ = append(differ, "mfa_lockout")
+		}
+		if len(differ) > 0 {
+			return fmt.Errorf("client %q has policies that gate tools but disagree on %s; "+
+				"unlocking is per client, so they must agree", p.Client, strings.Join(differ, ", "))
+		}
+	}
+	return nil
 }
 
 func policyFromSection(s uciSection) (*Policy, error) {

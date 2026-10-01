@@ -4,14 +4,17 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -175,6 +178,88 @@ func (m *MFAStore) reloadSecretsLocked() {
 		}
 	}
 	m.secrets, m.mtime = fresh, st.ModTime()
+	m.applySpentStepsLocked()
+}
+
+// ---------------------------------------------------------------- steps spent elsewhere
+//
+// `mfa activate` runs in its own process and spends a code to prove the scan worked. The
+// daemon only learns of the new secret by reloading the file, and its replay counter for that
+// client starts empty, so without help the very code typed at activation would open the
+// window once more for the rest of its 90 seconds. Activate therefore records the step it
+// spent in mfa.used, keyed to a fingerprint of the secret, and a reload honours it. The
+// fingerprint keeps a step spent on one secret from blocking the next one.
+
+func (m *MFAStore) usedPath() string { return m.path + ".used" }
+
+// secretFingerprint names a secret without revealing it: a truncated SHA-256 is enough to
+// tell two secrets apart and useless for producing codes.
+func secretFingerprint(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:8])
+}
+
+type spentStep struct {
+	ctr uint64
+	fp  string
+}
+
+func readSpentSteps(path string) map[string]spentStep {
+	out := map[string]spentStep{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 3 || strings.HasPrefix(f[0], "#") {
+			continue
+		}
+		ctr, err := strconv.ParseUint(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		out[f[0]] = spentStep{ctr: ctr, fp: f[2]}
+	}
+	return out
+}
+
+// applySpentStepsLocked raises a client's replay counter to a step recorded for the secret it
+// now has. It never lowers one. Callers hold m.mu.
+func (m *MFAStore) applySpentStepsLocked() {
+	for client, sp := range readSpentSteps(m.usedPath()) {
+		secret := m.secrets[client]
+		if secret == "" || secretFingerprint(secret) != sp.fp {
+			continue
+		}
+		if last, seen := m.lastCtr[client]; !seen || last < sp.ctr {
+			m.lastCtr[client] = sp.ctr
+		}
+	}
+}
+
+// recordSpentStep writes the step into mfa.used, one line per client, by sidecar and rename.
+func (m *MFAStore) recordSpentStep(client, secret string, ctr uint64) error {
+	steps := readSpentSteps(m.usedPath())
+	steps[client] = spentStep{ctr: ctr, fp: secretFingerprint(secret)}
+	var b strings.Builder
+	b.WriteString("# openwrt-mcp: TOTP steps already spent by `mfa activate`, so the daemon refuses them.\n")
+	clients := make([]string, 0, len(steps))
+	for c := range steps {
+		clients = append(clients, c)
+	}
+	sortStrings(clients)
+	for _, c := range clients {
+		fmt.Fprintf(&b, "%s %d %s\n", c, steps[c].ctr, steps[c].fp)
+	}
+	tmp := m.usedPath() + ".new"
+	if err := os.WriteFile(tmp, []byte(b.String()), mfaFileMode); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, mfaFileMode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, m.usedPath())
 }
 
 func parseMFAFile(path string) (map[string]string, error) {
@@ -396,6 +481,11 @@ func (m *MFAStore) Activate(client, code string, now time.Time) error {
 	}
 
 	m.reloadSecretsLocked()
+	// Recorded before the secret goes live, so a daemon that reloads the moment the active
+	// file changes already knows this step is spent.
+	if err := m.recordSpentStep(client, secret, ctr); err != nil {
+		return err
+	}
 	m.secrets[client] = secret
 	m.forgetLocked(client)
 	m.lastCtr[client] = ctr // the code that proved the scan is spent
