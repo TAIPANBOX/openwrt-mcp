@@ -252,11 +252,10 @@ func deviceLabel() string {
 //
 // device names the router in the account label; empty falls back to the hostname.
 func (m *MFAStore) Enrol(client, issuer, device string) (secret, uri string, err error) {
-	buf := make([]byte, 20) // 160 bits, per RFC 4226 section 4
-	if _, err := rand.Read(buf); err != nil {
+	secret, err = newTOTPSecret()
+	if err != nil {
 		return "", "", err
 	}
-	secret = base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf)
 
 	m.mu.Lock()
 	m.secrets[client] = secret
@@ -270,7 +269,19 @@ func (m *MFAStore) Enrol(client, issuer, device string) (secret, uri string, err
 	if err := m.save(snapshot); err != nil {
 		return "", "", err
 	}
+	return secret, otpauthURI(client, issuer, device, secret), nil
+}
 
+func newTOTPSecret() (string, error) {
+	buf := make([]byte, 20) // 160 bits, per RFC 4226 section 4
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf), nil
+}
+
+// otpauthURI is the string an authenticator app takes, as text or as a QR.
+func otpauthURI(client, issuer, device, secret string) string {
 	// otpauth label is "Issuer:AccountName". The router goes in the account, so apps show
 	// e.g. "openwrt-mcp (claude-code@GL-BE14000)" and two routers never collide.
 	account := client
@@ -281,15 +292,20 @@ func (m *MFAStore) Enrol(client, issuer, device string) (secret, uri string, err
 		account = client + "@" + device
 	}
 	label := url.PathEscape(issuer + ":" + account)
-	uri = fmt.Sprintf("otpauth://totp/%s?secret=%s&issuer=%s&algorithm=SHA1&digits=%d&period=%d",
+	return fmt.Sprintf("otpauth://totp/%s?secret=%s&issuer=%s&algorithm=SHA1&digits=%d&period=%d",
 		label, secret, url.QueryEscape(issuer), totpDigits, int(totpStep.Seconds()))
-	return secret, uri, nil
 }
 
 func (m *MFAStore) save(secrets map[string]string) error {
-	var b strings.Builder
-	b.WriteString("# openwrt-mcp TOTP secrets. Treat as credentials: anyone who reads this\n" +
+	return writeMFAFile(m.path, secrets, "# openwrt-mcp TOTP secrets. Treat as credentials: anyone who reads this\n"+
 		"# file can generate valid codes. Re-run `openwrt-mcp mfa enrol <client>` to rotate.\n")
+}
+
+// writeMFAFile writes "<client> <secret>" lines by sidecar and rename, so a crash mid-write
+// cannot leave a half-file that locks you out. Shared by the active and the pending file.
+func writeMFAFile(path string, secrets map[string]string, header string) error {
+	var b strings.Builder
+	b.WriteString(header)
 	clients := make([]string, 0, len(secrets))
 	for c := range secrets {
 		clients = append(clients, c)
@@ -298,15 +314,103 @@ func (m *MFAStore) save(secrets map[string]string) error {
 	for _, c := range clients {
 		fmt.Fprintf(&b, "%s %s\n", c, secrets[c])
 	}
-	if err := os.MkdirAll(filepath.Dir(m.path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	// Write-and-rename so a crash mid-write cannot leave a half-file that locks you out.
-	tmp := m.path + ".new"
+	tmp := path + ".new"
 	if err := os.WriteFile(tmp, []byte(b.String()), mfaFileMode); err != nil {
 		return err
 	}
-	return os.Rename(tmp, m.path)
+	return os.Rename(tmp, path)
+}
+
+// ---------------------------------------------------------------- two-step enrolment
+//
+// A plain `mfa enrol` makes the new secret live at once. If the QR was never scanned, or was
+// scanned wrongly, the client is now gated behind codes nobody can produce. Enrolling into
+// mfa.pending first, and activating with a code from the authenticator, proves the scan
+// worked before anything depends on it -- and lets an existing secret be rotated without a
+// window where neither works.
+
+const pendingHeader = "# openwrt-mcp TOTP secrets awaiting activation. Not in force until\n" +
+	"# `openwrt-mcp mfa activate <client> <code>` proves the authenticator has the secret.\n"
+
+func (m *MFAStore) pendingPath() string { return m.path + ".pending" }
+
+func readPending(path string) (map[string]string, error) {
+	pend, err := parseMFAFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	return pend, nil
+}
+
+// EnrolPending mints a secret into mfa.pending, leaving the active file untouched.
+func (m *MFAStore) EnrolPending(client, issuer, device string) (secret, uri string, err error) {
+	secret, err = newTOTPSecret()
+	if err != nil {
+		return "", "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pend, err := readPending(m.pendingPath())
+	if err != nil {
+		return "", "", err
+	}
+	pend[client] = secret
+	if err := writeMFAFile(m.pendingPath(), pend, pendingHeader); err != nil {
+		return "", "", err
+	}
+	return secret, otpauthURI(client, issuer, device, secret), nil
+}
+
+// TOTPPending reports whether the client has a secret waiting to be activated.
+func (m *MFAStore) TOTPPending(client string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pend, err := readPending(m.pendingPath())
+	return err == nil && pend[client] != ""
+}
+
+// Activate moves the client's pending secret into force, but only if code is valid now under
+// that secret. Otherwise it refuses and the secret stays pending. Replacing an active secret
+// closes any window opened under it, exactly as a rotation does.
+func (m *MFAStore) Activate(client, code string, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pend, err := readPending(m.pendingPath())
+	if err != nil {
+		return err
+	}
+	secret := pend[client]
+	if secret == "" {
+		return fmt.Errorf("no pending enrolment for %q; start one with: openwrt-mcp mfa enrol %s --pending", client, client)
+	}
+	ctr, ok := matchTOTP(secret, strings.TrimSpace(code), now)
+	if !ok {
+		return fmt.Errorf("that code is not valid right now, so the enrolment is still pending " +
+			"(scan the QR again if needed, and check the phone's clock)")
+	}
+
+	m.reloadSecretsLocked()
+	m.secrets[client] = secret
+	m.forgetLocked(client)
+	m.lastCtr[client] = ctr // the code that proved the scan is spent
+	snapshot := make(map[string]string, len(m.secrets))
+	for k, v := range m.secrets {
+		snapshot[k] = v
+	}
+	if err := m.save(snapshot); err != nil {
+		return err
+	}
+	delete(pend, client)
+	if len(pend) == 0 {
+		return os.Remove(m.pendingPath())
+	}
+	return writeMFAFile(m.pendingPath(), pend, pendingHeader)
 }
 
 func (m *MFAStore) Enrolled(client string) bool {
@@ -405,34 +509,45 @@ func (m *MFAStore) checkFactorsLocked(client string, in unlockAttempt, factor st
 	return nil
 }
 
-// checkTOTPLocked validates a code and, only if it is good and fresh, consumes its step.
-func (m *MFAStore) checkTOTPLocked(client, code string, now time.Time) error {
-	secret := m.secrets[client]
-	code = strings.TrimSpace(code)
-	// "No secret" and "wrong code" read the same: telling them apart tells an attacker
-	// which clients are worth attacking.
-	if secret == "" || len(code) != totpDigits {
-		return errInvalidCode
+// matchTOTP reports whether code is valid at now, within the accepted skew, and for which
+// time-step.
+func matchTOTP(secret, code string, now time.Time) (uint64, bool) {
+	if len(code) != totpDigits {
+		return 0, false
 	}
 	step := uint64(now.Unix()) / uint64(totpStep.Seconds())
 	for skew := -totpSkew; skew <= totpSkew; skew++ {
 		ctr := step + uint64(skew)
 		want, err := totpAt(secret, ctr)
 		if err != nil {
-			return errInvalidCode
+			return 0, false
 		}
-		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) != 1 {
-			continue
+		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 {
+			return ctr, true
 		}
-		// Replay: a code is single-use. Without this, a code shoulder-surfed or captured
-		// from a log is good for its whole 90-second acceptance span.
-		if last, seen := m.lastCtr[client]; seen && ctr <= last {
-			return errCodeReplayed
-		}
-		m.lastCtr[client] = ctr
-		return nil
 	}
-	return errInvalidCode
+	return 0, false
+}
+
+// checkTOTPLocked validates a code and, only if it is good and fresh, consumes its step.
+func (m *MFAStore) checkTOTPLocked(client, code string, now time.Time) error {
+	secret := m.secrets[client]
+	// "No secret" and "wrong code" read the same: telling them apart tells an attacker
+	// which clients are worth attacking.
+	if secret == "" {
+		return errInvalidCode
+	}
+	ctr, ok := matchTOTP(secret, strings.TrimSpace(code), now)
+	if !ok {
+		return errInvalidCode
+	}
+	// Replay: a code is single-use. Without this, a code shoulder-surfed or captured
+	// from a log is good for its whole 90-second acceptance span.
+	if last, seen := m.lastCtr[client]; seen && ctr <= last {
+		return errCodeReplayed
+	}
+	m.lastCtr[client] = ctr
+	return nil
 }
 
 // UnlockedUntil returns when the client's window closes, and whether it is open now.

@@ -120,27 +120,10 @@ func main() {
 		}
 		switch sub {
 		case "enrol", "enroll":
-			if len(args) < 3 || len(args) > 4 {
-				die("usage: openwrt-mcp mfa enrol <client> [device-label]\n" +
-					"  the label names this router in your authenticator; defaults to the hostname")
-			}
-			device := ""
-			if len(args) == 4 {
-				device = args[3]
-			}
-			secret, uri, err := ms.Enrol(args[2], "openwrt-mcp", device)
-			must(err)
-			// Printed once, like a pairing token -- but unlike one this IS recoverable from
-			// the state file, so say plainly that the file is credential material.
-			fmt.Printf("Enrolled %q. Scan this in your authenticator app:\n\n  %s\n\n"+
-				"  secret: %s\n\n"+
-				"Then require it for the tools that matter, e.g. in %s:\n"+
-				"  list mfa_tools 'exec'\n"+
-				"  list mfa_tools 'uci_apply'\n"+
-				"  option mfa_window '15m'\n\n"+
-				"Restart to apply: /etc/init.d/openwrt-mcp restart\n"+
-				"The secret is stored at %s/mfa (mode 0600); anyone who reads it can generate codes.\n",
-				args[2], uri, secret, defaultConfigPath, *statePath)
+			must(runMFAEnrol(os.Stdout, ms, *statePath, args[2:]))
+
+		case "activate":
+			must(runMFAActivate(os.Stdout, ms, args[2:], time.Now()))
 
 		case "status", "":
 			cfg, err := LoadConfig(*configPath)
@@ -148,7 +131,7 @@ func main() {
 			writeMFAStatus(os.Stdout, ms, cfg)
 
 		default:
-			die("usage: openwrt-mcp mfa enrol <client> | openwrt-mcp mfa status")
+			die("usage: openwrt-mcp mfa enrol <client> [--qr] [--json] [--pending] | mfa activate <client> <code> | mfa status")
 		}
 
 	case "pin":
@@ -238,7 +221,8 @@ func usage() {
   revoke                                      (edit %s and restart)
   policies                                    show current grants
   status   [--json] [--audit N]                daemon state, pairings, grants, recent audit
-  mfa      enrol <client> [device] | status   optional TOTP second factor for gated tools
+  mfa      enrol <client> [device] [--qr] [--json] [--pending]   optional TOTP second factor
+           activate <client> <code> | status                      (--pending enrols into mfa.pending)
   pin      set <client> | clear <client>      owner PIN as a second factor (set reads stdin)
   version
 
