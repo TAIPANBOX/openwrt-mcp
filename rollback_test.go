@@ -19,6 +19,7 @@ import (
 type rollbackRig struct {
 	cfgDir, stateDir, tmp, ctl string
 	configPath                 string
+	extraConfig                string // appended to the daemon's config file, e.g. policies
 }
 
 func newRollbackRig(t *testing.T) *rollbackRig {
@@ -74,7 +75,7 @@ func (r *rollbackRig) flag(t *testing.T, name string) {
 func (r *rollbackRig) server(t *testing.T) *Server {
 	t.Helper()
 	cfg := filepath.Join(filepath.Dir(r.stateDir), "config")
-	os.WriteFile(cfg, []byte("config server\n\toption audit '"+filepath.Join(r.stateDir, "audit.jsonl")+"'\n"), 0o600)
+	os.WriteFile(cfg, []byte("config server\n\toption audit '"+filepath.Join(r.stateDir, "audit.jsonl")+"'\n"+r.extraConfig), 0o600)
 	s, err := NewServer(cfg, r.stateDir)
 	if err != nil {
 		t.Fatal(err)

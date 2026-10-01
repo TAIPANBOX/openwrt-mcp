@@ -21,7 +21,7 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
     And a policy that gates some of its tools behind mfa_tools
 
   # bound to: TestRunPINSetReadsStdinAndPrintsNoSecret, TestRunPINRefusesAPINOnTheCommandLine
-  # bound to: TestRunPINSetRefusesBadInputWithAClearMessage, TestValidatePIN
+  # bound to: TestRunPINSetRefusesBadInputWithAClearMessage, TestValidatePIN, TestCLIPinSetClearAndStatus
   Scenario: the owner sets a PIN by piping it in, never on the command line
     When the owner runs "openwrt-mcp pin set <client>" with one line on stdin
     Then a PIN of exactly 4 to 8 ASCII digits is stored
@@ -151,6 +151,7 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
   # bound to: TestEnrolPendingStoresApartAndUnlocksNothing, TestEnrolPendingLeavesAnActiveSecretInForce
   # bound to: TestActivateMovesThePendingSecretOnlyForAValidCode, TestActivateReplacesAnExistingSecretAndClosesItsWindow
   # bound to: TestActivateWithNothingPendingSaysHowToStart, TestActivatingTheLastPendingSecretRemovesTheFile
+  # bound to: TestCLIMFAEnrolPendingJSONThenActivate
   Scenario: --pending enrolment is not live until a code proves the scan
     When the owner enrols with --pending
     Then the secret is kept in mfa.pending and unlocks nothing, and any secret already in force keeps working
@@ -174,3 +175,17 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
     Given two clients with the same PIN
     When one of them unlocks
     Then the other still needs to unlock for itself
+
+  # bound to: TestAnUnauthorisedCallerLearnsNothingAboutWhichToolsAreGated
+  Scenario: a client with no grant learns nothing about which tools are gated
+    Given a client with a valid token but no policy
+    When it calls a tool another client has gated
+    Then the refusal is the ordinary denial and does not mention a second factor
+
+  # bound to: TestPINWritesReportADiskFailureInsteadOfPretending, TestEnrolReportsADiskFailure
+  # bound to: TestLoadMFAErrorsAreNotSilent, TestMFAReloadKeepsSecretsWhenTheFileBecomesUnreadable
+  # bound to: TestNewServerFailsOnABrokenConfigOrStateFile, TestPINReloadKeepsWorkingPINsWhenTheFileIsUnreadable
+  Scenario: a state file that cannot be written or read is never treated as success or as empty
+    When saving a PIN or a secret fails, the command reports the failure
+    And when a factor's file is unreadable at startup, the daemon refuses to start
+    But a file that becomes unreadable while running does not wipe the factors already loaded

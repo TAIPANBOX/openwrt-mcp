@@ -31,9 +31,17 @@ func policyBlock(client, factor string, extra ...string) string {
 
 func newToolRig(t *testing.T, policies string) (*Server, string) {
 	t.Helper()
+	return newToolRigListening(t, "127.0.0.1:0", policies)
+}
+
+// newToolRigListening is newToolRig with a chosen listen address, which has to be in the
+// config file: the server re-reads the file on first use and would discard an override made
+// on the in-memory copy.
+func newToolRigListening(t *testing.T, listen, policies string) (*Server, string) {
+	t.Helper()
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config")
-	body := "config server\n\toption listen '127.0.0.1:0'\n\toption audit '" + dir + "/audit.jsonl'\n" + policies
+	body := "config server\n\toption listen '" + listen + "'\n\toption audit '" + dir + "/audit.jsonl'\n" + policies
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
