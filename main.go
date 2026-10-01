@@ -143,29 +143,22 @@ func main() {
 				args[2], uri, secret, defaultConfigPath, *statePath)
 
 		case "status", "":
-			clients := ms.Clients()
-			if len(clients) == 0 {
-				fmt.Println("(no clients enrolled -- no tool requires a second factor)")
-			}
-			for _, c := range clients {
-				fmt.Printf("%s: enrolled\n", c)
-			}
 			cfg, err := LoadConfig(*configPath)
 			must(err)
-			for _, p := range cfg.Policies {
-				if len(p.MFATools) > 0 {
-					fmt.Printf("  policy %s requires a code for: %s (window %s)\n",
-						p.Client, strings.Join(p.MFATools, ", "), p.MFAWindow)
-					if !ms.Enrolled(p.Client) {
-						fmt.Printf("  WARNING: %q has no enrolled secret, so those tools cannot be unlocked.\n"+
-							"           Run: openwrt-mcp mfa enrol %s\n", p.Client, p.Client)
-					}
-				}
-			}
+			writeMFAStatus(os.Stdout, ms, cfg)
 
 		default:
 			die("usage: openwrt-mcp mfa enrol <client> | openwrt-mcp mfa status")
 		}
+
+	case "pin":
+		// The PIN is read from stdin and never from argv: argv is world-readable in /proc and
+		// lands in shell history. It is checked and hashed in runPIN.
+		if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 && len(args) > 1 && args[1] == "set" {
+			fmt.Fprintln(os.Stderr, "reading the PIN from the terminal: it will be echoed. To keep it off the screen (bash, zsh):\n"+
+				"  read -rs PIN; printf '%s\\n' \"$PIN\" | openwrt-mcp pin set "+strings.Join(args[2:], " "))
+		}
+		must(runPIN(os.Stdout, os.Stdin, *statePath, args[1:]))
 
 	case "status":
 		// Backs the router's own web UI via the oui-httpd RPC module; --json is the
@@ -246,6 +239,7 @@ func usage() {
   policies                                    show current grants
   status   [--json] [--audit N]                daemon state, pairings, grants, recent audit
   mfa      enrol <client> [device] | status   optional TOTP second factor for gated tools
+  pin      set <client> | clear <client>      owner PIN as a second factor (set reads stdin)
   version
 
 Reach it from a workstation with:

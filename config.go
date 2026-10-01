@@ -120,6 +120,12 @@ type Policy struct {
 	MFATools  []string
 	MFAWindow time.Duration
 
+	// How the owner proves it is them: "totp" (default), "pin" or "pin+totp".
+	MFAFactor string
+	// Consecutive failed unlocks before unlocking is refused for MFALockout.
+	MFAMaxFailures int
+	MFALockout     time.Duration
+
 	mu   sync.Mutex
 	hits []time.Time // rolling 60s window; process-scoped by design (see README)
 }
@@ -221,6 +227,34 @@ func policyFromSection(s uciSection) (*Policy, error) {
 		return nil, fmt.Errorf("bad 'mfa_window': %w", err)
 	}
 	p.MFAWindow = w
+
+	// How the owner proves it is them, and what guessing costs. Defaults reproduce the
+	// behaviour from before these options existed, so an old config unlocks exactly as it did.
+	p.MFAFactor = factorTOTP
+	if v := strings.TrimSpace(s.Options["mfa_factor"]); v != "" {
+		switch v {
+		case factorTOTP, factorPIN, factorPINTOTP:
+			p.MFAFactor = v
+		default:
+			return nil, fmt.Errorf("bad 'mfa_factor' %q: want %s, %s or %s", v, factorTOTP, factorPIN, factorPINTOTP)
+		}
+	}
+	p.MFAMaxFailures = defaultMFAMaxFailures
+	if v := strings.TrimSpace(s.Options["mfa_max_failures"]); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("bad 'mfa_max_failures' %q: want a whole number of at least 1", v)
+		}
+		p.MFAMaxFailures = n
+	}
+	p.MFALockout = defaultMFALockout
+	if v := strings.TrimSpace(s.Options["mfa_lockout"]); v != "" {
+		d, err := parseDuration(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("bad 'mfa_lockout' %q: want a positive duration such as 15m", v)
+		}
+		p.MFALockout = d
+	}
 	return p, nil
 }
 

@@ -134,9 +134,29 @@ func (s *Server) mfaGate(p *Policy, client, tool string, now time.Time) string {
 	if _, open := s.mfa.UnlockedUntil(client, now); open {
 		return ""
 	}
+	var ask string
+	switch p.unlockPolicy().Factor {
+	case factorPIN:
+		ask = "the operator's PIN"
+	case factorPINTOTP:
+		ask = "the operator's PIN and a current 6-digit code from their authenticator"
+	default:
+		ask = "a current 6-digit code from your authenticator"
+	}
 	return fmt.Sprintf("denied: %s requires a second factor for %q\n"+
-		"  call mfa_unlock with a current 6-digit code from your authenticator; "+
-		"it stays unlocked for %s", tool, client, p.MFAWindow)
+		"  call mfa_unlock with %s; it stays unlocked for %s", tool, client, ask, p.unlockPolicy().Window)
+}
+
+// unlockPolicyFor is the policy that governs this client's unlocks: the first enabled one
+// that gates anything, so a policy saying 5m is not silently stretched to the default. A
+// client with none is held to the defaults, which is the historical behaviour.
+func (s *Server) unlockPolicyFor(client string) unlockPolicy {
+	for _, p := range s.cfg().Policies {
+		if p.Client == client && p.Enabled && len(p.MFATools) > 0 {
+			return p.unlockPolicy()
+		}
+	}
+	return (&Policy{}).unlockPolicy()
 }
 
 // uciScopes derives the policy scopes for an apply. Named rather than inlined so a test can
@@ -292,8 +312,11 @@ type execIn struct {
 	Timeout int      `json:"timeout,omitempty" jsonschema:"seconds before the command is killed (default 30, max 300)"`
 }
 
+type mfaLockIn struct{}
+
 type mfaUnlockIn struct {
-	Code string `json:"code" jsonschema:"the current 6-digit code from the operator's authenticator app"`
+	Code string `json:"code,omitempty" jsonschema:"the current 6-digit code from the operator's authenticator app; send it when the policy asks for a code"`
+	PIN  string `json:"pin,omitempty" jsonschema:"the operator's PIN; send it when the policy asks for a PIN"`
 }
 
 type logreadIn struct {
@@ -399,30 +422,38 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 		})
 
 	addTool(s, srv, client, "mfa_unlock",
-		"Supply a 6-digit TOTP code to unlock the tools this client's policy marks as needing "+
-			"a second factor. One code opens a time-boxed window rather than gating every call, "+
-			"so ask the operator for a code once and work normally until it expires. Codes are "+
-			"single-use. Does nothing unless the operator has enrolled a secret with "+
-			"'openwrt-mcp mfa enrol'.",
+		"Unlock the tools this client's policy marks as needing a second factor. Which factor is "+
+			"the operator's policy: a 6-digit TOTP code from their authenticator (send 'code'), "+
+			"their PIN (send 'pin'), or both ('pin+totp'). Send exactly what the refusal from the "+
+			"gated tool asked for. One unlock opens a time-boxed window rather than gating every "+
+			"call, so ask the operator once and work normally until it expires. Codes are "+
+			"single-use. Repeated wrong answers lock unlocking for a while: do not guess, ask the "+
+			"operator. Does nothing unless the operator has set up a factor with "+
+			"'openwrt-mcp mfa enrol' or 'openwrt-mcp pin set'.",
 		func(in mfaUnlockIn) []string { return nil },
 		func(ctx context.Context, in mfaUnlockIn) (string, string, error) {
-			now := time.Now()
-			window := defaultMFAWindow
-			// Use the window from any policy that names this client, so a policy saying
-			// 5m is not silently stretched to the default.
-			for _, p := range s.cfg().Policies {
-				if p.Client == client && p.Enabled && len(p.MFATools) > 0 {
-					window = p.MFAWindow
-					break
-				}
-			}
-			until, err := s.mfa.Unlock(client, in.Code, window, now)
+			up := s.unlockPolicyFor(client)
+			until, err := s.mfa.Attempt(client, unlockAttempt{Code: in.Code, PIN: in.PIN}, up, time.Now())
 			if err != nil {
 				// Returned as an error so it audits as ERROR, distinct from a policy DENIED.
 				return "", "mfa_unlock", err
 			}
-			return fmt.Sprintf("Unlocked until %s (%s).", until.Format(time.RFC3339), window),
+			return fmt.Sprintf("Unlocked until %s (%s).", until.Format(time.RFC3339), up.Window),
 				"mfa_unlock", nil
+		})
+
+	addTool(s, srv, client, "mfa_lock",
+		"Close this client's unlock window at once. Call it when the privileged work is done, "+
+			"so that the gated tools ask for the second factor again. It only ever removes "+
+			"access, so it needs no grant.",
+		func(in mfaLockIn) []string { return nil },
+		func(ctx context.Context, in mfaLockIn) (string, string, error) {
+			if s.mfa.Lock(client) {
+				return "Locked. The unlock window for " + client + " is closed; gated tools need " +
+					"the second factor again.", "mfa_lock", nil
+			}
+			return "Already locked: " + client + " was not unlocked, so there was nothing to close.",
+				"mfa_lock", nil
 		})
 
 	addTool(s, srv, client, "logread",
@@ -495,9 +526,10 @@ func addTool[In any](s *Server, srv *mcp.Server, client, name, desc string,
 			//
 			// mfa_unlock is exempt for the obvious reason: it is how you satisfy the second
 			// factor, so gating it behind the second factor would be a deadlock. It is safe
-			// to leave open because it grants nothing on its own -- without a valid current
-			// code it does nothing but record a failed attempt.
-			if name != "ubus_list" && name != "mfa_unlock" {
+			// to leave open because it grants nothing on its own -- without the right
+			// factors it does nothing but record a failed attempt, and the lockout caps those.
+			// mfa_lock is exempt because it can only remove access, never add it.
+			if name != "ubus_list" && name != "mfa_unlock" && name != "mfa_lock" {
 				now := time.Now()
 				p, reason := s.cfg().AuthorisePolicy(client, name, scopes, now)
 				if p == nil {

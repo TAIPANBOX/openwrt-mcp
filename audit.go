@@ -21,6 +21,11 @@ var secretKeySubstrings = []string{
 	"psk", "wgkey", "encryption_key",
 }
 
+// secretKeyExact are keys that are secret only when they are the whole name. "code" and
+// "pin" are what mfa_unlock carries; as substrings they would also hide "ping", "mapping",
+// "zipcode" and "country_code" in a ubus argument, making the log useless for no gain.
+var secretKeyExact = map[string]bool{"code": true, "pin": true, "otp": true}
+
 const redacted = "<redacted>"
 
 func redact(v any) any {
@@ -48,6 +53,9 @@ func redact(v any) any {
 
 func isSecretKey(k string) bool {
 	lk := strings.ToLower(k)
+	if secretKeyExact[lk] {
+		return true
+	}
 	for _, s := range secretKeySubstrings {
 		if strings.Contains(lk, s) {
 			return true
