@@ -193,6 +193,10 @@ func (s *Server) Serve() error {
 // on startup an unconfirmed apply is always reverted, because "we lost track of it" is
 // exactly when you want the conservative answer.
 
+// uciConfigDir is where the router keeps its UCI files. A variable only so tests can point
+// the apply/rollback machinery at a scratch directory.
+var uciConfigDir = "/etc/config"
+
 type pendingApply struct {
 	Token    string    `json:"token"`
 	Snapshot string    `json:"snapshot"`
@@ -203,6 +207,28 @@ type pendingApply struct {
 }
 
 func (s *Server) pendingPath() string { return path.Join(s.statePath, "pending.json") }
+
+// rollbackDir holds the snapshots. It lives in the state directory, which is on flash and
+// survives a reboot, and not in os.TempDir(): on OpenWrt /tmp is RAM, so a power cut or a
+// crash mid-window used to leave a pending.json that named a snapshot that no longer existed,
+// and the very change the rollback was armed for -- the one that strands the router -- could
+// then not be undone at the next start. The snapshots hold wifi keys and the like, so the
+// directory is 0700 and each file 0600.
+func (s *Server) rollbackDir() string { return path.Join(s.statePath, "rollback") }
+
+// newSnapshotPath makes sure the rollback directory exists with the right mode and returns
+// where this apply's snapshot goes.
+func (s *Server) newSnapshotPath(token string) (string, error) {
+	dir := s.rollbackDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	// MkdirAll leaves an existing directory as it found it; tighten one that was loose.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	return path.Join(dir, "openwrt-mcp-rollback-"+token+".tar.gz"), nil
+}
 
 // A change is one of four things, decided by which fields are set:
 //
@@ -300,7 +326,7 @@ func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, e
 	}
 	var names []string
 	for c := range configs {
-		if _, err := os.Stat("/etc/config/" + c); err != nil {
+		if _, err := os.Stat(path.Join(uciConfigDir, c)); err != nil {
 			return "", "", fmt.Errorf("no such UCI config %q", c)
 		}
 		names = append(names, c)
@@ -308,10 +334,18 @@ func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, e
 	sort.Strings(names)
 
 	token := randToken()
-	snapshot := path.Join(os.TempDir(), "openwrt-mcp-rollback-"+token+".tar.gz")
+	snapshot, err := s.newSnapshotPath(token)
+	if err != nil {
+		return "", "", fmt.Errorf("snapshot failed: %w", err)
+	}
 	if out, err := run(ctx, defaultCmdTimeout,
-		append([]string{"tar", "-czf", snapshot, "-C", "/etc/config"}, names...)...); err != nil {
+		append([]string{"tar", "-czf", snapshot, "-C", uciConfigDir}, names...)...); err != nil {
+		_ = os.Remove(snapshot)
 		return "", "", fmt.Errorf("snapshot failed: %w\n%s", err, out)
+	}
+	if err := os.Chmod(snapshot, 0o600); err != nil {
+		_ = os.Remove(snapshot)
+		return "", "", fmt.Errorf("snapshot failed: %w", err)
 	}
 
 	for _, c := range in.Changes {
@@ -392,7 +426,7 @@ func (s *Server) restoreSnapshot(ctx context.Context, snapshot string, configs [
 	if _, err := os.Stat(snapshot); err != nil {
 		return fmt.Errorf("snapshot %s missing: %w", snapshot, err)
 	}
-	if out, err := run(ctx, defaultCmdTimeout, "tar", "-xzf", snapshot, "-C", "/etc/config"); err != nil {
+	if out, err := run(ctx, defaultCmdTimeout, "tar", "-xzf", snapshot, "-C", uciConfigDir); err != nil {
 		return fmt.Errorf("restore failed: %w\n%s", err, out)
 	}
 	for _, c := range configs {

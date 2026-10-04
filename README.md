@@ -4,6 +4,17 @@
 [![Release](https://img.shields.io/github/v/release/GlassOnTin/openwrt-mcp)](https://github.com/GlassOnTin/openwrt-mcp/releases)
 [![ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/glassontin)
 
+> **This is the TAIPANBOX fork of [GlassOnTin/openwrt-mcp](https://github.com/GlassOnTin/openwrt-mcp).**
+> It carries the owner-unlock work on top of upstream 0.5.0: a PIN factor stored as a salted
+> PBKDF2 hash, a factor chosen per policy (`totp`, `pin`, `pin+totp`), a lockout after wrong
+> tries, `mfa_lock`, redaction of secrets in the audit log, two-step QR enrolment, and the
+> rollback snapshot kept in the state directory rather than in /tmp, so it survives a reboot. See
+> [Optional: a second factor for the dangerous tools](#optional-a-second-factor-for-the-dangerous-tools).
+> The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
+> feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
+> upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
+> the rest is not upstream yet.
+
 An MCP server that runs **on** an OpenWrt router, so Claude Code (or any MCP client) can
 inspect and change it over an SSH tunnel.
 
@@ -17,8 +28,9 @@ instead. That package is installed and exercised on every CI run inside OpenWrt'
 published rootfs image, by OpenWrt's own apk: `scripts/gate-apk-parity.sh` requires it to
 land the same files with the same modes as the `.ipk`, to enable the service, to leave a
 hand-edited `/etc/config/openwrt-mcp` alone across a reinstall, and to remove cleanly.
-What CI cannot show is aarch64 hardware, so a Flint 2 running vanilla 25.12 is still the
-last untested step.
+What CI cannot show is aarch64 hardware. This apk was installed and exercised on a Flint 2
+and a Brume 2, both vanilla OpenWrt 25.12.5, aarch64, on 2026-09-27: paired a client,
+granted scoped policies, and removed cleanly afterward.
 
 Two differences from the `.ipk` worth knowing before you install one:
 
@@ -32,7 +44,7 @@ The other OpenWrt MCP servers I could find run *off*-router — they SSH in from
 workstation on every call. This one is resident: a single static Go binary under procd,
 always on, with its own authorisation and audit trail.
 
-It exposes seven generic tools rather than a hand-written catalogue of router features.
+It exposes nine generic tools rather than a hand-written catalogue of router features.
 `ubus list -v` already self-describes every object, method and argument signature on the
 box, so the agent discovers what your router can actually do instead of trusting a list
 that goes stale with each firmware update. On a GL.iNet box that means the vendor's own
@@ -230,9 +242,71 @@ re-locks everything. Standard RFC 6238 (SHA-1, 6 digits, 30s), checked against t
 test vectors, so any authenticator app works.
 
 > Run `mfa enrol` yourself over SSH. The secret is printed once and is *recoverable* from
-> `/etc/openwrt-mcp/mfa` (mode 0600), unlike bearer tokens which are stored only as digests —
+> `/etc/openwrt-mcp/mfa` (mode 0600), unlike bearer tokens which are stored only as digests -
 > so anything that sees your terminal or that file can generate codes. Enrolling on someone
 > else's behalf, or pasting the secret into a chat, defeats the point of a second factor.
+
+#### Enrolling with a QR, and proving the scan before it goes live
+
+```sh
+openwrt-mcp mfa enrol claude-code --qr        # also draws the QR in the terminal
+openwrt-mcp mfa enrol claude-code --json      # one JSON object for a web page: client, uri, secret, qr_png_base64
+openwrt-mcp mfa enrol claude-code --pending   # stored apart, NOT in force yet
+openwrt-mcp mfa activate claude-code 123456   # in force only if that code is valid right now
+```
+
+A plain `mfa enrol` makes the new secret live at once, so a QR that was never scanned (or
+scanned wrongly) leaves the client gated behind codes nobody can produce. With `--pending` the
+secret waits in `mfa.pending` and unlocks nothing; `mfa activate` moves it into force only
+after a code from the authenticator has proved it works, and refuses (keeping it pending) on a
+wrong, expired or missing code. Any secret already in force keeps working until then, so it is
+also the safe way to rotate. Without flags `mfa enrol` behaves exactly as it always did. The
+code used to activate is recorded as spent in `mfa.used`, keyed to the new secret, so the
+running daemon refuses it too.
+
+#### Choosing the factor: a PIN, a code, or both
+
+Each policy says what the owner must supply to unlock:
+
+```
+config policy
+	option client 'claude-code'
+	...
+	list   mfa_tools         'exec'
+	option mfa_factor        'pin+totp'   # totp (default) | pin | pin+totp
+	option mfa_max_failures  '5'          # consecutive failed unlocks before a lockout
+	option mfa_lockout       '15m'        # how long unlocking is refused after that
+```
+
+`totp` is the default, so an existing config behaves exactly as before. A bad value stops the
+config loading with an error naming the option.
+
+```sh
+printf '%s\n' "$PIN" | openwrt-mcp pin set claude-code   # 4 to 8 digits, read from stdin
+openwrt-mcp pin clear claude-code
+```
+
+The PIN is read from one line of stdin and never from an argument (which would sit in
+`/proc` and in shell history). Only a salted PBKDF2-HMAC-SHA256 hash is stored, in
+`/etc/openwrt-mcp/pin` (0600), and a PIN changed or cleared from the CLI takes effect on the
+running daemon, closing any window opened under the old one. `mfa_unlock` then takes
+`{"code": "...", "pin": "..."}` and requires exactly the factors the policy names. With
+`pin+totp` the PIN is checked first, so a wrong PIN never spends the owner's TOTP code, and
+no refusal says which factor was wrong.
+
+A PIN is short, so the throttle is what protects it. After `mfa_max_failures` consecutive
+failed unlocks the client is refused for `mfa_lockout`: every attempt in that time is
+rejected without looking at any factor and without counting, and the refusal says when it
+ends. A success resets the count. `mfa_lock` closes the calling client's window at once.
+
+```
+mfa_unlock {"pin":"0000"}   -> invalid credentials              (x5)
+mfa_unlock {"pin":"4821"}   -> too many failed attempts: unlocking is locked out until 2026-10-01T22:15:00Z
+mfa_lock {}                 -> Locked. The unlock window for claude-code is closed; ...
+```
+
+The PIN and the code never reach `audit.jsonl`: the `code` and `pin` arguments are redacted
+at write time.
 
 ### 4. Connect over a tunnel
 
@@ -335,7 +409,7 @@ Adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **Authorisation** | Standing policies in `/etc/config/openwrt-mcp`. Deny by default. A policy grants a client a tool list, scope globs, a calls/minute ceiling and an expiry — and can only ever *add* permission. |
 | **Refusals are actionable** | A denial names the uncovered scope and prints the `openwrt-mcp allow …` line that would grant it. |
 | **Grant management is CLI-only** | `pair`/`allow`/`unpair` are not MCP tools, so there's no tool for a policy to cover and no self-escalation path through the policy system. |
-| **Rollback** | `uci_apply` reverts unless confirmed, including across a daemon restart. |
+| **Rollback** | `uci_apply` reverts unless confirmed, including across a daemon restart or a reboot: the snapshot lives in `/etc/openwrt-mcp/rollback` (0700), not in RAM-backed `/tmp`. |
 
 `ubus_list` is the one ungated tool: introspection returns method names and argument types,
 never configuration data, and without it an agent can't discover what to ask for.
@@ -369,10 +443,12 @@ Both were the first choice; neither works for a resident daemon.
 | `ubus_call` | `<object>.<method>` | The workhorse: netifd, wireless, dnsmasq, iwinfo, luci-rpc, `gl-*`. Replies over 8 KB have long arrays pruned — see Findings. |
 | `uci_apply` | `<config>.<section>.<option>`, or `<config>.<section>` for a section-level change | Stage → snapshot → commit → reload, rollback armed. Sets options, and creates or deletes whole sections. All scopes must be covered by one policy. |
 | `uci_confirm` | *(tool-level)* | Cancels the rollback timer. |
+| `uci_get` | `<config>`, `<config>.<section>` or `<config>.<section>.<option>` | Reads configuration as `config.section.option=value` lines, narrowed by config, section or option: the read path `uci_apply` lacks, safer than an exec shell for inspecting state first. A section- or option-level read is covered by a `<config>.*` grant; a whole-config read needs `<config>`. |
 | `exec` | `argv[0]` | Direct exec, **no shell** — no pipes, globs or redirection, and no quoting surface. |
 | `logread` | *(tool-level)* | Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions are not dropped. Returns the config **and a UTF-8 QR** to scan. Emits a private key — see below. |
-| `mfa_unlock` | *(ungated)* | Supplies a TOTP code to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without a valid current code. |
+| `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without the right ones, and repeated failures lock it for a while. |
+| `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it can only remove access. |
 
 ### `wg_new_client`
 
@@ -496,6 +572,16 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
 - A broadly scoped `exec` grant is a root shell, and from a root shell `openwrt-mcp allow`
   grants anything else. Scoped grants (`exec` limited to named binaries) keep the policy
   engine meaningful; an unscoped one reduces it to an audit trail.
+- Unlock windows, failure counts and lockouts live in the daemon's memory only, so a restart
+  re-locks everything but also forgives a lockout. For the same reason `openwrt-mcp status
+  --json` (a separate process) reports each client's `mfa` object with `live_state: false`: the
+  factor, `totp_enrolled`, `totp_pending` and `pin_set` are read from files and are accurate,
+  but `unlocked_until`, `locked_out_until` and `failures` are only filled in by a process that
+  holds the daemon's own state. There is deliberately no channel from `status` into the daemon.
+- The lockout is per client and can be triggered by anyone holding that client's bearer
+  token: five wrong guesses deny the owner an unlock for `mfa_lockout`. It grants the guesser
+  nothing, and the owner can lift it at once by setting a new PIN or re-enrolling, which
+  closes the old window and clears the throttle on a running daemon.
 - Rate-limit windows are process-scoped, so a restart resets them — erring toward allowing
   what you already granted.
 - Tool output is capped at 64 KB, and ubus replies over 8 KB have arrays capped at 16

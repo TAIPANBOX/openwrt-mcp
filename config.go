@@ -120,6 +120,12 @@ type Policy struct {
 	MFATools  []string
 	MFAWindow time.Duration
 
+	// How the owner proves it is them: "totp" (default), "pin" or "pin+totp".
+	MFAFactor string
+	// Consecutive failed unlocks before unlocking is refused for MFALockout.
+	MFAMaxFailures int
+	MFALockout     time.Duration
+
 	mu   sync.Mutex
 	hits []time.Time // rolling 60s window; process-scoped by design (see README)
 }
@@ -168,7 +174,47 @@ func LoadConfig(configPath string) (*Config, error) {
 			c.Policies = append(c.Policies, p)
 		}
 	}
+	if err := checkUnlockAgreement(c.Policies); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// checkUnlockAgreement refuses a config where one client has two enabled policies that gate
+// tools and disagree on how unlocking works. Unlocking is per client, not per policy: the
+// refusal from a gated tool names its own policy's factor, while mfa_unlock checks the first
+// gating policy's. Two that disagree would ask the owner for one thing and check another.
+func checkUnlockAgreement(policies []*Policy) error {
+	first := map[string]unlockPolicy{}
+	for _, p := range policies {
+		if !p.Enabled || len(p.MFATools) == 0 {
+			continue
+		}
+		got := p.unlockPolicy()
+		want, seen := first[p.Client]
+		if !seen {
+			first[p.Client] = got
+			continue
+		}
+		var differ []string
+		if got.Factor != want.Factor {
+			differ = append(differ, "mfa_factor")
+		}
+		if got.Window != want.Window {
+			differ = append(differ, "mfa_window")
+		}
+		if got.MaxFailures != want.MaxFailures {
+			differ = append(differ, "mfa_max_failures")
+		}
+		if got.Lockout != want.Lockout {
+			differ = append(differ, "mfa_lockout")
+		}
+		if len(differ) > 0 {
+			return fmt.Errorf("client %q has policies that gate tools but disagree on %s; "+
+				"unlocking is per client, so they must agree", p.Client, strings.Join(differ, ", "))
+		}
+	}
+	return nil
 }
 
 func policyFromSection(s uciSection) (*Policy, error) {
@@ -221,6 +267,34 @@ func policyFromSection(s uciSection) (*Policy, error) {
 		return nil, fmt.Errorf("bad 'mfa_window': %w", err)
 	}
 	p.MFAWindow = w
+
+	// How the owner proves it is them, and what guessing costs. Defaults reproduce the
+	// behaviour from before these options existed, so an old config unlocks exactly as it did.
+	p.MFAFactor = factorTOTP
+	if v := strings.TrimSpace(s.Options["mfa_factor"]); v != "" {
+		switch v {
+		case factorTOTP, factorPIN, factorPINTOTP:
+			p.MFAFactor = v
+		default:
+			return nil, fmt.Errorf("bad 'mfa_factor' %q: want %s, %s or %s", v, factorTOTP, factorPIN, factorPINTOTP)
+		}
+	}
+	p.MFAMaxFailures = defaultMFAMaxFailures
+	if v := strings.TrimSpace(s.Options["mfa_max_failures"]); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("bad 'mfa_max_failures' %q: want a whole number of at least 1", v)
+		}
+		p.MFAMaxFailures = n
+	}
+	p.MFALockout = defaultMFALockout
+	if v := strings.TrimSpace(s.Options["mfa_lockout"]); v != "" {
+		d, err := parseDuration(v)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("bad 'mfa_lockout' %q: want a positive duration such as 15m", v)
+		}
+		p.MFALockout = d
+	}
 	return p, nil
 }
 

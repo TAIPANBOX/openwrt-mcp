@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+**Owner-controlled unlocking: a PIN, a TOTP code, or both, with a lockout.**
+
+### Added
+
+- `mfa_factor` per policy (`totp` default, `pin`, `pin+totp`), `mfa_max_failures` (default 5)
+  and `mfa_lockout` (default 15m). `mfa_unlock` takes `{"code", "pin"}` and requires exactly
+  what the policy names; with `pin+totp` the PIN is checked first so a wrong PIN never spends
+  the TOTP replay counter, and no refusal says which factor was wrong.
+- `openwrt-mcp pin set <client>` (one line on stdin, 4 to 8 digits, never an argument) and
+  `pin clear <client>`. Stored as a salted PBKDF2-HMAC-SHA256 hash in `<state>/pin`, verified in
+  constant time, hot-reloaded. `BenchmarkPINVerify` prices one verification.
+- Per-client lockout after `mfa_max_failures` consecutive failures: attempts are refused
+  without checking or counting, and the refusal names when it ends.
+- `mfa_lock` tool, closes the caller's unlock window at once.
+- `mfa enrol --qr`, `--json` and `--pending`, and `mfa activate <client> <code>`.
+- `status --json`: a per-client `mfa` object (factor, totp_enrolled, totp_pending, pin_set,
+  unlocked_until, locked_out_until, failures, live_state).
+- `features/owner-unlock.feature`, bound to Go tests by `scripts/gate-scenarios-bound.sh`, and
+  `scripts/gate-scenarios-bound-teeth.sh`.
+
+### Fixed
+
+- `uci_apply`'s rollback snapshot is kept in `<state>/rollback` (0700, files 0600) instead of
+  `/tmp`, which is RAM on OpenWrt: a reboot used to leave a pending record naming a snapshot
+  that no longer existed. Deleted on confirm and after a successful rollback.
+- The `code` and `pin` arguments of `mfa_unlock` are now redacted from `audit.jsonl`.
+
+### Changed
+
+- `MFAStore.Unlock` goes through the same lockout as every other way in.
+- A refused `mfa_unlock` under a `pin` or `pin+totp` policy reads "invalid credentials"; under
+  `totp` the messages are unchanged.
+
 ## v0.5.0
 
 **Issue a WireGuard client and show a QR to scan it**, plus `uci_get` to read configuration

@@ -39,7 +39,58 @@ type clientReport struct {
 	Name string `json:"name"`
 	// No token and no digest. Tokens are unrecoverable by construction and digests are
 	// credential material; neither belongs in a browser.
-	Policies int `json:"policies"`
+	Policies int       `json:"policies"`
+	MFA      mfaReport `json:"mfa"`
+}
+
+// mfaReport is the owner-unlock picture of one client. It holds facts and times only: never a
+// TOTP secret, a PIN, or any part of a PIN's hash or salt, so it is safe to hand to a browser.
+//
+// The first four fields come from files and are true for any process. The rest (an open
+// window, a lockout, the failure count) exist only in the daemon's memory, by design: a
+// restart re-locks everything and forgives nothing it cannot see. `status` runs as its own
+// process and has no channel into the daemon -- the repo has none, and adding one for this
+// would be a second control surface -- so it reports them as absent and says so with
+// live_state:false. Only a caller that holds the daemon's own MFAStore gets live_state:true.
+type mfaReport struct {
+	Factor         string `json:"factor"` // totp | pin | pin+totp, or "none" when no tool is gated
+	TOTPEnrolled   bool   `json:"totp_enrolled"`
+	TOTPPending    bool   `json:"totp_pending"`
+	PINSet         bool   `json:"pin_set"`
+	UnlockedUntil  string `json:"unlocked_until,omitempty"`
+	LockedOutUntil string `json:"locked_out_until,omitempty"`
+	Failures       int    `json:"failures"`
+	LiveState      bool   `json:"live_state"`
+}
+
+// buildMFAReport describes one client. ms may be nil (the state directory could not be
+// read), which reports every file-backed fact as false rather than failing the whole status.
+// live says whether ms is the daemon's own store, so the runtime fields can be trusted.
+func buildMFAReport(ms *MFAStore, cfg *Config, client string, now time.Time, live bool) mfaReport {
+	r := mfaReport{Factor: "none", LiveState: live}
+	for _, p := range cfg.Policies {
+		if p.Client == client && p.Enabled && len(p.MFATools) > 0 {
+			r.Factor = p.unlockPolicy().Factor
+			break
+		}
+	}
+	if ms == nil {
+		return r
+	}
+	r.TOTPEnrolled = ms.Enrolled(client)
+	r.TOTPPending = ms.TOTPPending(client)
+	r.PINSet = ms.PINSet(client)
+	if live {
+		st := ms.State(client, now)
+		if !st.UnlockedUntil.IsZero() {
+			r.UnlockedUntil = st.UnlockedUntil.Format(time.RFC3339)
+		}
+		if !st.LockedOutUntil.IsZero() {
+			r.LockedOutUntil = st.LockedOutUntil.Format(time.RFC3339)
+		}
+		r.Failures = st.Failures
+	}
+	return r
 }
 
 type policyReport struct {
@@ -94,10 +145,15 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 	// Pairings come from the token store, not from the policy list: a client can be paired
 	// with nothing granted, and that is worth seeing rather than hiding.
 	if ts, err := LoadTokens(statePath + "/tokens"); err == nil {
+		// Loading the MFA store reads files and writes none. An unreadable one is not
+		// fatal: every client then reports its factors as not set up.
+		ms, _ := LoadMFA(statePath + "/mfa")
 		names := ts.Clients()
 		sort.Strings(names)
 		for _, n := range names {
-			rep.Clients = append(rep.Clients, clientReport{Name: n, Policies: perClient[n]})
+			rep.Clients = append(rep.Clients, clientReport{
+				Name: n, Policies: perClient[n], MFA: buildMFAReport(ms, cfg, n, now, false),
+			})
 		}
 	}
 
@@ -202,6 +258,10 @@ func writeStatusText(w io.Writer, r statusReport) error {
 	fmt.Fprintf(w, "%d paired client(s), %d policy/policies\n", len(r.Clients), len(r.Policies))
 	for _, c := range r.Clients {
 		fmt.Fprintf(w, "  %s (%d policy/policies)\n", c.Name, c.Policies)
+		if c.MFA.Factor != "none" {
+			fmt.Fprintf(w, "    unlock factor %s: totp %s, pin %s\n", c.MFA.Factor,
+				setOrNot(c.MFA.TOTPEnrolled, c.MFA.TOTPPending), setOrNot(c.MFA.PINSet, false))
+		}
 	}
 	for _, p := range r.Policies {
 		exp := "never"
@@ -218,4 +278,14 @@ func writeStatusText(w io.Writer, r statusReport) error {
 		fmt.Fprintf(w, "  %s %-7s %-12s %s\n", a.Time, a.Outcome, a.Tool, a.Scope)
 	}
 	return nil
+}
+
+func setOrNot(set, pending bool) string {
+	switch {
+	case set:
+		return "set"
+	case pending:
+		return "pending activation"
+	}
+	return "not set"
 }
