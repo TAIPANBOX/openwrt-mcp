@@ -4,6 +4,17 @@
 [![Release](https://img.shields.io/github/v/release/GlassOnTin/openwrt-mcp)](https://github.com/GlassOnTin/openwrt-mcp/releases)
 [![ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/glassontin)
 
+> **This is the TAIPANBOX fork of [GlassOnTin/openwrt-mcp](https://github.com/GlassOnTin/openwrt-mcp).**
+> It carries the owner-unlock work on top of upstream 0.5.0: a PIN factor stored as a salted
+> PBKDF2 hash, a factor chosen per policy (`totp`, `pin`, `pin+totp`), a lockout after wrong
+> tries, `mfa_lock`, redaction of secrets in the audit log, two-step QR enrolment, and the
+> rollback snapshot kept in the state directory rather than in /tmp, so it survives a reboot. See
+> [Optional: a second factor for the dangerous tools](#optional-a-second-factor-for-the-dangerous-tools).
+> The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
+> feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
+> upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
+> the rest is not upstream yet.
+
 An MCP server that runs **on** an OpenWrt router, so Claude Code (or any MCP client) can
 inspect and change it over an SSH tunnel.
 
