@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0-taipanbox.1
 
 **Owner-controlled unlocking: a PIN, a TOTP code, or both, with a lockout.**
 
