@@ -44,7 +44,7 @@ The other OpenWrt MCP servers I could find run *off*-router — they SSH in from
 workstation on every call. This one is resident: a single static Go binary under procd,
 always on, with its own authorisation and audit trail.
 
-It exposes nine generic tools rather than a hand-written catalogue of router features.
+It exposes ten generic tools rather than a hand-written catalogue of router features.
 `ubus list -v` already self-describes every object, method and argument signature on the
 box, so the agent discovers what your router can actually do instead of trusting a list
 that goes stale with each firmware update. On a GL.iNet box that means the vendor's own
@@ -168,7 +168,7 @@ Download `openwrt-mcp_*.ipk` from [Releases](https://github.com/GlassOnTin/openw
 and push it over — no toolchain needed:
 
 ```sh
-ssh root@192.168.8.1 'cat > /tmp/openwrt-mcp.ipk' < openwrt-mcp_0.4.0_aarch64_cortex-a53.ipk
+ssh root@192.168.8.1 'cat > /tmp/openwrt-mcp.ipk' < openwrt-mcp_0.5.0_aarch64_cortex-a53.ipk
 ssh root@192.168.8.1 'opkg install /tmp/openwrt-mcp.ipk && rm -f /tmp/openwrt-mcp.ipk'
 ```
 
@@ -531,9 +531,10 @@ whole path over a real `ssh -L` tunnel.
 **Verified previously on the Flint 2 and not re-run here:** revocation taking effect without
 a restart, per-client policy isolation.
 
-29 unit tests pass. They're mutation-checked: neutering `Authorise` fails 5, neutering
-`redact` fails 2, neutering the response pruner fails 2, and removing the pruner *call* from
-`ubus_call` fails 1 — that last test exists because an earlier version of the pruner had
+`go test -list . ./...` lists 212 tests and `go test ./...` passes. Historical, from when the
+suite had 29 tests and not re-run against the current code: they were mutation-checked, and
+neutering `Authorise` failed 5, neutering `redact` failed 2, neutering the response pruner failed 2, and removing the pruner *call* from
+`ubus_call` failed 1 — that last test exists because an earlier version of the pruner had
 working unit tests while nothing asserted the tool actually used it.
 
 **Not verified:** that `keep.d` survives a real `sysupgrade` — the file is installed and
