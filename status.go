@@ -49,6 +49,9 @@ func capabilities() map[string]bool {
 		// Every uci_get answer has secret option values replaced, for every client, with no
 		// way to turn it off (uci_redact.go).
 		"uci_get_redacts_credentials": true,
+		// uci_apply refuses, before staging anything and for every client, any change that would
+		// make the router run code as root: an include, a dhcpscript, a hook (uci_noexec.go).
+		"uci_apply_refuses_code_exec": true,
 	}
 }
 
