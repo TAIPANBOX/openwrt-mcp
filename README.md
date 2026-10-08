@@ -412,6 +412,7 @@ Adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **Refusals are actionable** | A denial names the uncovered scope and prints the `openwrt-mcp allow …` line that would grant it. |
 | **Grant management is CLI-only** | `pair`/`allow`/`unpair` are not MCP tools, so there's no tool for a policy to cover and no self-escalation path through the policy system. |
 | **Rollback** | `uci_apply` reverts unless confirmed, including across a daemon restart or a reboot: the snapshot lives in `/etc/openwrt-mcp/rollback` (0700), not in RAM-backed `/tmp`. |
+| **No code execution through `uci_apply`** | `uci_apply` refuses, before staging anything, any change that would make the router run a program or load configuration that can: a firewall include, dnsmasq's `dhcpscript`, uhttpd's interpreters, openvpn's scripts and the like. For every client, always, with no switch. See [below](#uci_apply-never-makes-the-router-run-code). |
 | **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
 
 `ubus_list` is the one ungated tool: introspection returns method names and argument types,
@@ -508,6 +509,82 @@ What it does **not** cover:
 `uci_apply`'s refusal to start on top of someone else's uncommitted edits lists those edits,
 and that list is redacted the same way; so is the error `wg_new_client` returns when it
 cannot read the WireGuard server's config.
+
+### `uci_apply` never makes the router run code
+
+A policy is a list of globs over `config.section.option`, and a glob cannot tell a firewall
+rule from a firewall include. Both live under `firewall.*`, but an include's `path` is a
+script the firewall runs as root on every reload, and `uci_apply` triggers that reload itself.
+The same goes for dnsmasq's `dhcpscript`, run on every DHCP lease. So `uci_apply` checks every
+change itself, before it stages anything, for every client, whatever the policy grants:
+
+```
+refused: firewall.evil makes the router run code as root; openwrt-mcp never applies that (firewall include: ...)
+Nothing in this batch was applied. Ask the operator to make that change by hand if it is wanted.
+```
+
+- **One refused change refuses the batch.** Nothing is staged, committed or snapshotted, so a
+  refusal never leaves half a hook in `/tmp/.uci` for the next commit to pick up.
+- **What is refused.** The list is in `uci_noexec.go`, each entry naming the OpenWrt source it
+  comes from:
+  - creating a section of a type that runs something, or changing any option of one that
+    exists: firewall and pbr `include`, net-snmp `exec`, `extend` and `pass`, LuCI's
+    `command`, rpcd's `login`, collectd's exec sections. The section's type is read from
+    `uci -X show`, so `@include[0]`, `@include[-1]`, a name and a `cfgXXXXXX` id are all
+    caught. If the type cannot be read, the change is refused;
+  - dnsmasq `dhcpscript`, `extraconftext` (raw dnsmasq config) and `confdir`; odhcpd
+    `leasetrigger`; uhttpd `interpreter`, `cgi_prefix`, `lua_prefix`, `lua_handler`,
+    `ucode_prefix`, `json_script`, `home` and `no_ubusauth`; ppp `connect`, `disconnect` and
+    `pppd_options`; openvpn `up`, `down`, `route_up`, `ipchange`, the `client_*` and
+    `*_verify` scripts, `script_security`, `config`, `plugin`, `providers`, `engine` and
+    `iproute`; strongswan `updown`; keepalived `misc_path`; nebula `config_file`; openconnect
+    `csd_wrapper`; acme `credentials` (evaluated as shell); the collectd exec `cmdline`,
+    `PluginDir` and `Include`;
+  - any option whose name ends in `script`, `cmd`, `command`, `exec`, `hook`, `handler` or
+    `parm`, or in `conffile`, `confdir` (or their underscore spellings) or `config_file`:
+    ddns `update_script`, adblock's and banIP's `*_fetchcmd` and `*_fetchparm`, ttyd's
+    `command`, dropbear's `ForceCommand`, watchcat's `script` and the like;
+  - every change to `nginx` (each option is written out as a raw nginx directive) and
+    `ucitrack` (which names the commands LuCI runs);
+  - an option named `PATH`, `LD_PRELOAD` or `LD_LIBRARY_PATH`: adblock, banIP and travelmate
+    load every option of their config into a shell variable of the same name;
+  - a line break anywhere in a change. Init scripts write uci values into config files one per
+    line, so a second line in a value is a second directive (`lan` followed by a newline and
+    `dhcp-script=/tmp/x.sh` as dnsmasq's `domain`);
+  - a config, section, option or type name outside uci's own alphabet (letters, digits, `_`,
+    `-`, and `@type[n]` for a section), because a dot or an `=` inside one would make the key
+    uci acts on differ from the key that was checked.
+- **What stays allowed.** Deleting a hook option, and deleting a whole include section:
+  removing a hook runs nothing. (Deleting one option of an include is refused, because
+  deleting `enabled` switches a disabled include back on.) A handful of names a suffix would
+  catch run nothing and are exempt: keepalived's `track_script` (names of sections) and
+  openvpn's `ifconfig_noexec` and `route_noexec` (they turn an exec off). sqm's `script` and
+  acme's `dns` are allowed when the value is a plain file name such as `piece_of_cake.qos` or
+  `dns_cf`, since that only picks an installed script; with a `/` or `..` in it they are
+  refused. Every other option name in OpenWrt's own Wi-Fi, firewall, DHCP and network sources
+  stays allowed; a test runs the check over all of them.
+- **The refusal is audited** as `DENIED`, with the refused key and the reason.
+- **A client can check for it** before granting `uci_apply`: `openwrt-mcp status --json`
+  reports `"capabilities": {"uci_apply_refuses_code_exec": true}`.
+
+What it does **not** cover:
+
+- **Other tools.** `exec` is a root shell by design and is held back only by policy and the
+  second factor: do not grant it to an agent that must not run commands. `ubus_call` reaches
+  rpcd's `file.exec` and every service's own ubus methods.
+- **Options that write a file, or read data from one**: dnsmasq's and odhcpd's `leasefile`,
+  openvpn's `log`, dnsmasq's `addnhosts` and `serversfile`, hostapd's `eap_user_file`. These
+  are data, not code, though a file written into the wrong place can become code at the next
+  boot.
+- **Raw directives of daemons that cannot run a program from them**, such as the Wi-Fi
+  `hostapd_options` and the firewall's `extra` options.
+- **Services that give a shell by design**, such as ttyd or rtty with their defaults: turning
+  one on is a setting, and whoever connects still has to log in.
+- **A package the list does not know**, that runs an option whose name gives no sign of it.
+- **Some harmless settings are refused** because of the rules above: unetd's `connect` (a
+  list of peers, refused because ppp's `connect` is a program), sqm or acme names that are not
+  plain file names, and any value with a line break in it, such as multi-line `notes`. The
+  operator can still make those changes by hand.
 
 ### `wg_new_client`
 

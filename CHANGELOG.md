@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.5.0-taipanbox.3 (binary version 0.5.0.3)
+
+**`uci_apply` never makes the router run code as root.** A policy is a glob over
+`config.section.option` and cannot tell a firewall rule from a firewall include, so a grant on
+`firewall.*` let an agent create an include whose `path` is a script the firewall runs as root
+on every reload; `dhcp.*` let it set dnsmasq's `dhcpscript`.
+
+### Added
+
+- `uci_apply` checks the whole batch before it snapshots or stages anything, for every client,
+  with no switch, and refuses any change that would make the router run a program or load
+  configuration that can: firewall and pbr `include` sections (created, or any option changed
+  on an existing one, however the section is named; the type is read from `uci -X show`, and
+  if it cannot be read the change is refused), net-snmp `exec`/`extend`/`pass`, LuCI
+  `command`, rpcd `login` and collectd exec sections; dnsmasq `dhcpscript`, `extraconftext`
+  and `confdir`, odhcpd `leasetrigger`, uhttpd's interpreters and handler prefixes, ppp
+  `connect`/`disconnect`/`pppd_options`, openvpn's scripts, plugins and config file, and the
+  hook families `*script`, `*cmd`, `*command`, `*exec`, `*hook`, `*handler`, `*parm`,
+  `*conffile`, `*confdir`, `*config_file`; every change to `nginx` and `ucitrack`; options
+  named `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`; a line break anywhere in a change. Each entry
+  in `uci_noexec.go` names the OpenWrt source it comes from. One refused change refuses the
+  batch. The agent is told `refused: <key> makes the router run code as root; openwrt-mcp
+  never applies that`, and the audit log records it as `DENIED`.
+- `status --json` capabilities carry `"uci_apply_refuses_code_exec": true`.
+- `features/uci-apply-no-code-exec.feature`, 11 scenarios bound to tests.
+
+### Changed
+
+- `uci_apply` refuses a config, section, option or type name outside uci's own alphabet
+  (letters, digits, `_`, `-`, and `@type[n]` for a section). Before, a section or option
+  holding a `.` or `=` reached `uci set` as a different key from the one the policy matched.
+- Deleting a hook option, or a whole include section, is still allowed: removing a hook runs
+  nothing. Deleting one option of an include is refused, since deleting `enabled` re-enables it.
+
+### Not covered
+
+- `exec` and `ubus_call` (rpcd's `file.exec`) still run whatever policy grants them.
+- Options that write or read a data file (`leasefile`, `log`, `addnhosts`), raw directives of
+  daemons that cannot run a program (`hostapd_options`), and shell-giving services such as
+  ttyd or rtty left at their defaults.
+- A package the list does not know, running an option whose name gives no sign of it.
+
 ## v0.5.0-taipanbox.2 (binary version 0.5.0.2)
 
 **`uci_get` never returns a secret.** What a tool answers reaches the agent's model provider,
