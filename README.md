@@ -10,6 +10,8 @@
 > tries, `mfa_lock`, redaction of secrets in the audit log, two-step QR enrolment, and the
 > rollback snapshot kept in the state directory rather than in /tmp, so it survives a reboot. See
 > [Optional: a second factor for the dangerous tools](#optional-a-second-factor-for-the-dangerous-tools).
+> Since 0.5.0.2 it also keeps the router's secrets out of every `uci_get` answer; see
+> [`uci_get` never returns a secret](#uci_get-never-returns-a-secret).
 > The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
 > feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
 > upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
@@ -35,7 +37,7 @@ granted scoped policies, and removed cleanly afterward.
 Two differences from the `.ipk` worth knowing before you install one:
 
 - `apk` refuses an unsigned local file, so installing by hand needs
-  `apk add --allow-untrusted ./openwrt-mcp-0.5.0-r1.apk`. Signing belongs to a repository
+  `apk add --allow-untrusted ./openwrt-mcp-0.5.0.2-r1.apk`. Signing belongs to a repository
   index rather than to a package, and OpenWrt's own package build does not sign either.
 - The filename carries no architecture. For `.ipk` it did; for `.apk` the architecture is
   in the metadata, and `apk` refuses a package built for another one.
@@ -410,6 +412,7 @@ Adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **Refusals are actionable** | A denial names the uncovered scope and prints the `openwrt-mcp allow …` line that would grant it. |
 | **Grant management is CLI-only** | `pair`/`allow`/`unpair` are not MCP tools, so there's no tool for a policy to cover and no self-escalation path through the policy system. |
 | **Rollback** | `uci_apply` reverts unless confirmed, including across a daemon restart or a reboot: the snapshot lives in `/etc/openwrt-mcp/rollback` (0700), not in RAM-backed `/tmp`. |
+| **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
 
 `ubus_list` is the one ungated tool: introspection returns method names and argument types,
 never configuration data, and without it an agent can't discover what to ask for.
@@ -443,12 +446,68 @@ Both were the first choice; neither works for a resident daemon.
 | `ubus_call` | `<object>.<method>` | The workhorse: netifd, wireless, dnsmasq, iwinfo, luci-rpc, `gl-*`. Replies over 8 KB have long arrays pruned — see Findings. |
 | `uci_apply` | `<config>.<section>.<option>`, or `<config>.<section>` for a section-level change | Stage → snapshot → commit → reload, rollback armed. Sets options, and creates or deletes whole sections. All scopes must be covered by one policy. |
 | `uci_confirm` | *(tool-level)* | Cancels the rollback timer. |
-| `uci_get` | `<config>`, `<config>.<section>` or `<config>.<section>.<option>` | Reads configuration as `config.section.option=value` lines, narrowed by config, section or option: the read path `uci_apply` lacks, safer than an exec shell for inspecting state first. A section- or option-level read is covered by a `<config>.*` grant; a whole-config read needs `<config>`. |
+| `uci_get` | `<config>`, `<config>.<section>` or `<config>.<section>.<option>` | Reads configuration as `config.section.option=value` lines, narrowed by config, section or option: the read path `uci_apply` lacks, safer than an exec shell for inspecting state first. A section- or option-level read is covered by a `<config>.*` grant; a whole-config read needs `<config>`. Secret values read `'<redacted>'`, see below. |
 | `exec` | `argv[0]` | Direct exec, **no shell** — no pipes, globs or redirection, and no quoting surface. |
 | `logread` | *(tool-level)* | Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions are not dropped. Returns the config **and a UTF-8 QR** to scan. Emits a private key — see below. |
 | `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without the right ones, and repeated failures lock it for a while. |
 | `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it can only remove access. |
+
+### `uci_get` never returns a secret
+
+Whatever a tool returns goes into the agent's context, and from there to the agent's model
+provider. An agent setting up a guest network has to read the Wi-Fi configuration, and that
+config holds the passphrases next to the SSIDs. So `uci_get` replaces the value of every
+secret option with a fixed marker, in every answer, for every client:
+
+```
+wireless.default_radio0.ssid='Home Net'
+wireless.default_radio0.encryption='psk2'
+wireless.default_radio0.key='<redacted>'
+network.wg0.private_key='<redacted>'
+network.peer1.public_key='hQ7r...='
+```
+
+- **By option name, in every config.** The list is in `uci_redact.go`, each entry with the
+  config it comes from: the Wi-Fi `key`, `key1` to `key4`, `sae_password`, the EAP passwords
+  and private keys, `auth_secret`, `acct_secret`, `dae_secret`, `r0kh` and `r1kh`; WireGuard
+  `private_key` and `preshared_key`; the PPP, L2TP, 6in4 and VPN passwords; the SIM `pincode`;
+  uhttpd's, dropbear's and OpenVPN's key files; and the families `*key`, `*password`,
+  `*passwd`, `*pass`, `*pwd`, `*secret`, `*_psk`, `*token`, `*pin`. A WireGuard peer's
+  `public_key` and the `*_rekey` intervals stay readable. A value that is only the path of a
+  key file is hidden too: being wrong in that direction costs nothing.
+- **Narrowing or widening the read does not get around it.** The redaction works on what
+  `uci show` prints, so a whole config, one section and the option itself by name all come
+  back the same way. It reads that output by libuci's own grammar, so a value with a quote,
+  a list, or a newline in it is hidden whole, not just its first line.
+- **There is no switch.** `uci_get` takes a config, a section and an option, nothing else.
+- **The marker is not a value.** `uci_apply` refuses `<redacted>` as a value, so an agent
+  copying one network's settings to another cannot give it a passphrase that is printed in
+  this README. To set a secret, the agent asks the operator for it, and `uci_apply` taking
+  that value as input is expected: the operator chose to give it.
+- **A client can check for it** before granting reads of `wireless` or the whole of
+  `network`: `openwrt-mcp status --json` reports
+  `"capabilities": {"uci_get_redacts_credentials": true}`, and a binary without it has no
+  such key. It is a named capability rather than a version comparison so that a caller tests
+  for the guarantee it depends on.
+
+What it does **not** cover:
+
+- **Other tools.** `ubus_call` returns what the ubus method returns, and some return config
+  with the keys inside it: `network.wireless status` lists every interface's settings,
+  `key` included, and rpcd's `ubus call uci get` returns any option's value. None of that is
+  redacted: do not grant those objects to an agent whose context should not hold the keys.
+  `exec` can read `/etc/config/wireless` directly, and `wg_new_client` returns the new
+  client's private key by design.
+- **A secret under a name that gives no sign of it**, such as a token pasted into a ddns
+  `update_url` or a password inside ppp's `pppd_options`.
+- **Some harmless settings are hidden** because their names end like a secret's: for
+  example `sae_ext_key`, OpenVPN's `persist_key`, GRE's `ikey`/`okey`, vpnc's `hexpasswd`.
+  The rule errs that way on purpose.
+
+`uci_apply`'s refusal to start on top of someone else's uncommitted edits lists those edits,
+and that list is redacted the same way; so is the error `wg_new_client` returns when it
+cannot read the WireGuard server's config.
 
 ### `wg_new_client`
 
@@ -531,7 +590,10 @@ whole path over a real `ssh -L` tunnel.
 **Verified previously on the Flint 2 and not re-run here:** revocation taking effect without
 a restart, per-client policy isolation.
 
-`go test -list . ./...` lists 212 tests and `go test ./...` passes. Historical, from when the
+`go test -list . ./...` lists 226 tests (plus a benchmark and a fuzz target) and `go test ./...`
+passes. The `uci_get` redaction was mutation-checked on 2026-10-08: 22 deliberate breaks of
+the redaction and its wiring (a dropped name such as `key1` or `r0kh`, a parser that splits
+on every newline, a missing call), each made a named test fail. Historical, from when the
 suite had 29 tests and not re-run against the current code: they were mutation-checked, and
 neutering `Authorise` failed 5, neutering `redact` failed 2, neutering the response pruner failed 2, and removing the pruner *call* from
 `ubus_call` failed 1 — that last test exists because an earlier version of the pruner had
@@ -561,7 +623,8 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
   would have to reimplement the Lua layer's validation; the generic path is not safe here.
 - **`/tmp/gl_screen/active_config` holds the screen passcode in plaintext** (`PASSCODE
   "1402"`). Any `exec` grant broad enough to read it exposes the device unlock code. The
-  auditor's `redact` covers the audit log, not tool output.
+  auditor's `redact` covers the audit log, and `uci_get`'s redaction covers `uci_get`; nothing
+  redacts what `exec` returns.
 - `sms_manager` exists but exposes exactly one ubus method, `set_sms_log_level`. There is no
   send or read surface, and with no modem fitted (`cellular.modem status` → `{"modems": []}`)
   nothing to wrap.
@@ -588,6 +651,9 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
 - Tool output is capped at 64 KB, and ubus replies over 8 KB have arrays capped at 16
   elements. Both cuts say so in the result, but a caller that needs a full time series has
   to reach for a narrower ubus method.
+- `uci_get` redacts secret option values; `ubus_call` and `exec` do not, and some ubus
+  methods (`network.wireless status`) return the Wi-Fi keys. See
+  [`uci_get` never returns a secret](#uci_get-never-returns-a-secret).
 - Install with `make install-ipk`, not `make install`, if you want the daemon to survive a
   firmware upgrade — only the packaged form ships the `keep.d` entry.
 
