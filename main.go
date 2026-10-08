@@ -21,7 +21,7 @@ import (
 // Not "0.5.0-taipanbox.2": the package version is taken from this line, and apk accepts only
 // digits, dots and its own suffixes, so that string would not build an .apk. 0.5.0.2 sorts
 // after 0.5.0 for both apk and opkg, and before an upstream 0.5.1.
-var version = "0.5.0.2"
+var version = "0.5.0.3"
 
 const sourceURL = "https://github.com/GlassOnTin/openwrt-mcp"
 
