@@ -178,6 +178,61 @@ func str(v any) string {
 	return s
 }
 
+// uci_apply refuses to start on top of someone else's uncommitted edits and lists them. The
+// owner may have staged a new passphrase in the web UI, and that list goes to the agent.
+func TestUciApplyRefusalDoesNotShowAStagedSecret(t *testing.T) {
+	fakeCmd(t, "uci", `[ "$1" = changes ] && printf '%s\n' "wireless.guest.key='Staged-Passphrase-9'" \
+  "wireless.guest.r0kh+='02:00:00:00:03:00,ap1,Staged-R0KH-Key'" "wireless.guest.ssid='New Name'"
+exit 0`)
+	s, _ := newToolRig(t, "config policy\n\toption client 'a'\n\tlist tools 'uci_apply'\n\tlist scopes '*'\n")
+	out, isErr := callTool(t, s, "a", "uci_apply", map[string]any{"changes": []map[string]any{
+		{"config": "network", "section": "lan", "option": "ipaddr", "value": "10.0.0.1"}}})
+	if !isErr || !strings.Contains(out, "uncommitted") {
+		t.Fatalf("not refused for the staged edits: %q (error=%v)", out, isErr)
+	}
+	for _, s := range []string{"Staged-Passphrase-9", "Staged-R0KH-Key"} {
+		if strings.Contains(out, s) {
+			t.Errorf("the refusal handed over the staged secret %q:\n%s", s, out)
+		}
+	}
+	if !strings.Contains(out, "wireless.guest.ssid='New Name'") {
+		t.Errorf("the refusal no longer says what is staged:\n%s", out)
+	}
+}
+
+// uci_get shows a secret as '<redacted>'. An agent copying one network's settings to another
+// must not be able to write that back: the guest network would get a passphrase that anyone
+// reading this source knows.
+func TestUciApplyRefusesTheRedactionMarkerAsAValue(t *testing.T) {
+	for _, v := range []string{"<redacted>", "'<redacted>'"} {
+		r := newRollbackRig(t)
+		r.extraConfig = "config policy\n\toption client 'a'\n\tlist tools 'uci_apply'\n\tlist scopes '*'\n"
+		s := r.server(t)
+		out, isErr := callTool(t, s, "a", "uci_apply", map[string]any{"changes": []map[string]any{
+			{"config": "network", "section": "wg0", "option": "private_key", "value": v}}})
+		if !isErr || !strings.Contains(out, "marker") {
+			t.Errorf("value %q: %q (error=%v)", v, out, isErr)
+		}
+		if left := r.snapshots(t); len(left) != 0 {
+			t.Errorf("value %q: a refused apply left a snapshot: %v", v, left)
+		}
+	}
+}
+
+// wg_new_client reads wireguard_server, which holds the VPN server's own private key, and on
+// a failed read it hands uci's output back inside the error.
+func TestWgNewClientErrorDoesNotShowTheServerKey(t *testing.T) {
+	fakeCmd(t, "uci", `echo "wireguard_server.main_server.private_key='Server-Private-Key/abc='"; echo "uci: I/O error" >&2; exit 1`)
+	s, _ := newToolRig(t, "config policy\n\toption client 'a'\n\tlist tools 'wg_new_client'\n\tlist scopes '*'\n")
+	out, isErr := callTool(t, s, "a", "wg_new_client", map[string]any{"name": "phone"})
+	if !isErr || !strings.Contains(out, "wireguard_server") {
+		t.Fatalf("%q (error=%v)", out, isErr)
+	}
+	if strings.Contains(out, "Server-Private-Key") {
+		t.Errorf("the server's private key reached the client:\n%s", out)
+	}
+}
+
 // A selector that begins with "-" is refused before uci runs: some getopt would read it as a
 // flag, and `uci -d` changes how lists print, which is the shape the redaction reads.
 func TestUciGetRefusesASelectorThatLooksLikeAFlag(t *testing.T) {

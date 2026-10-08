@@ -224,7 +224,8 @@ func (s *Server) wgNewClient(ctx context.Context, in wgNewClientIn) (string, str
 
 	show, err := run(ctx, defaultCmdTimeout, "uci", "show", "wireguard_server")
 	if err != nil {
-		return show, "", fmt.Errorf("reading wireguard_server config: %w", err)
+		// Returned output reaches the client, and this config holds the server's private key.
+		return redactUCIOutput(show), "", fmt.Errorf("reading wireguard_server config: %w", err)
 	}
 	t := parseUCIShow(show)
 
