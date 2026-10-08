@@ -189,12 +189,22 @@ func uciGetScope(in uciGetIn) []string {
 // uciGet reads current configuration with `uci show`. It is the read path uci_apply lacked:
 // an agent can inspect state before changing it without being handed exec (a root shell) or
 // a broad ubus "uci.*" grant merely to look.
+//
+// Every answer is redacted (see uci_redact.go), on the error path as well, because the tool
+// wrapper hands a failed command's output to the client inside the error.
 func uciGet(ctx context.Context, in uciGetIn) (string, string, error) {
 	if in.Config == "" {
 		return "", "", fmt.Errorf("config is required")
 	}
 	if in.Option != "" && in.Section == "" {
 		return "", "", fmt.Errorf("option requires a section")
+	}
+	// A selector that begins with "-" would be read by some getopt as a flag, and `uci -d`
+	// changes how lists are printed, which is the shape the redaction reads.
+	for _, part := range []string{in.Config, in.Section, in.Option} {
+		if strings.HasPrefix(part, "-") {
+			return "", "", fmt.Errorf("bad selector %q: config, section and option cannot begin with '-'", part)
+		}
 	}
 	sel := in.Config
 	if in.Section != "" {
@@ -204,7 +214,7 @@ func uciGet(ctx context.Context, in uciGetIn) (string, string, error) {
 		}
 	}
 	out, err := run(ctx, defaultCmdTimeout, "uci", "show", sel)
-	return out, "read " + sel, err
+	return redactUCIOutput(out), "read " + sel, err
 }
 
 // ubusCall is the ubus_call handler. It is a named function rather than a closure so a test
@@ -384,6 +394,9 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 		"Read router configuration. Returns settings as config.section.option=value lines. "+
 			"Give a config to dump it (e.g. dhcp), add a section to narrow, or an option for a single value. "+
 			"Use this to inspect state before changing it with uci_apply -- safer than being handed an exec shell. "+
+			"Secrets are never returned: the value of a Wi-Fi key, a password, a private or preshared key, a "+
+			"RADIUS secret and the like reads '<redacted>', however the read is narrowed. That marker is not a "+
+			"value to write back; to set a secret, ask the operator for it. "+
 			"Policy scope mirrors uci_apply: '<config>', '<config>.<section>' or '<config>.<section>.<option>'. "+
 			"A section- or option-level read is covered by a '<config>.*' grant; a whole-config read needs '<config>'.",
 		uciGetScope,
