@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -249,8 +250,18 @@ func validateChange(c UCIChange) error {
 	if c.Config == "" || c.Section == "" {
 		return fmt.Errorf("each change needs at least a config and a section")
 	}
-	if strings.ContainsAny(c.Config, "/.") {
+	// Names are checked against uci's own alphabet, not only for "/" and ".": a "." or "=" inside a
+	// section or option would make the key uci acts on differ from the key the policy and the
+	// code-execution check read (section "@dnsmasq[0].dhcpscript" with a type is
+	// `uci set dhcp.@dnsmasq[0].dhcpscript=<type>`).
+	if !uciName.MatchString(c.Config) {
 		return fmt.Errorf("bad config name %q", c.Config)
+	}
+	if !uciSectionName.MatchString(c.Section) {
+		return fmt.Errorf("bad section %q: a name, or @type[index]", c.Section)
+	}
+	if c.Option != "" && !uciName.MatchString(c.Option) {
+		return fmt.Errorf("bad option name %q", c.Option)
 	}
 	if c.Type != "" {
 		if c.Option != "" {
@@ -261,7 +272,7 @@ func validateChange(c UCIChange) error {
 			return fmt.Errorf("%s.%s: type creates a section, so it cannot be combined with delete",
 				c.Config, c.Section)
 		}
-		if strings.ContainsAny(c.Type, "/.=") {
+		if !uciName.MatchString(c.Type) {
 			return fmt.Errorf("bad section type %q", c.Type)
 		}
 		return nil
@@ -278,6 +289,13 @@ func validateChange(c UCIChange) error {
 	}
 	return nil
 }
+
+// uciName is what libuci accepts as a config, option or type name (util.c uci_validate_str):
+// letters, digits, '_' and '-'. uciSectionName adds the "@type[index]" selector.
+var (
+	uciName        = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	uciSectionName = regexp.MustCompile(`^([A-Za-z0-9_-]+|@[A-Za-z0-9_-]+\[-?[0-9]+\])$`)
+)
 
 // uciKey is the change's identity for error messages and policy scope: "config.section" for
 // anything section-level, "config.section.option" otherwise. Creating a section is a
@@ -340,6 +358,12 @@ func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, e
 		names = append(names, c)
 	}
 	sort.Strings(names)
+
+	// Nothing that makes the router run code, for any client, ever (uci_noexec.go). Checked over
+	// the whole batch before anything is snapshotted or staged.
+	if err := refuseCodeExec(ctx, in.Changes); err != nil {
+		return "", "refused: would run code as root", err
+	}
 
 	token := randToken()
 	snapshot, err := s.newSnapshotPath(token)

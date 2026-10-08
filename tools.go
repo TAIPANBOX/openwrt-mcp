@@ -556,6 +556,11 @@ func addTool[In any](s *Server, srv *mcp.Server, client, name, desc string,
 			}
 
 			out, summary, err := fn(ctx, in)
+			if err != nil && isRefused(err) {
+				// A refusal by rule (uci_apply's code-execution check) is a DENIED, like a policy
+				// refusal, not an ERROR: nothing broke, the daemon said no.
+				return finish(errResult(err.Error()), OutcomeDenied, summary, err.Error())
+			}
 			if err != nil {
 				msg := err.Error()
 				if out != "" {
