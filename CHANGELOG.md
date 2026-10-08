@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.5.0-taipanbox.2 (binary version 0.5.0.2)
+
+**`uci_get` never returns a secret.** What a tool answers reaches the agent's model provider,
+and the configs an agent needs to read (`wireless`, `network`) hold the router's keys.
+
+### Added
+
+- Every `uci_get` answer has the value of each secret option replaced by `'<redacted>'`, for
+  every client, with no way to turn it off. Secret by option name, in any config: an explicit
+  list and suffix families in `uci_redact.go`, each entry naming the OpenWrt config it comes
+  from (Wi-Fi keys and passwords, RADIUS and DAE secrets, 802.11r key holders, WireGuard
+  private and preshared keys, PPP/L2TP/6in4/VPN passwords, the SIM PIN, key files). A
+  WireGuard peer's `public_key` and the `*_rekey` intervals stay readable. The output is read
+  by libuci's own grammar, so quoted, list and multi-line values are hidden whole.
+- `status --json` carries `"capabilities": {"uci_get_redacts_credentials": true}`, so a client
+  can check for the guarantee before it grants reads of `wireless` or the whole of `network`.
+- `features/uci-get-redaction.feature`, 11 scenarios bound to tests. The binding gate now reads
+  every feature file except the apk one, instead of a list kept by hand.
+
+### Fixed
+
+- `uci_apply`'s refusal on top of someone else's uncommitted edits listed those edits raw,
+  a staged passphrase included; it is redacted now. So is the `uci show wireguard_server`
+  output that `wg_new_client` returned when that read failed, which holds the server's private
+  key.
+
+### Changed
+
+- `uci_apply` refuses a value containing `<redacted>`: written back it would become the
+  secret, and a passphrase printed in the README is no passphrase.
+- `uci_get` refuses a config, section or option that begins with `-`.
+- The binary reports `0.5.0.2`: upstream 0.5.0 plus the fork's second release. The fork's
+  first release still reported `0.5.0`. A fork-style `0.5.0-taipanbox.2` is not a version apk
+  accepts, so the package could not have been built with it.
+
+### Not covered
+
+- `ubus_call` and `exec` are not redacted, and some ubus methods return the Wi-Fi keys
+  (`network.wireless status`, rpcd's `uci get`). A secret under a name that gives no sign of
+  it (a token in a ddns `update_url`) is not found.
+
 ## v0.5.0-taipanbox.1
 
 **Owner-controlled unlocking: a PIN, a TOTP code, or both, with a lockout.**

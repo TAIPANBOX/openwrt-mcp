@@ -118,4 +118,35 @@ func TestPasses(t *testing.T) { t.Skip("not today") }
 GO
 expect_red "a bound test that is skipped" "$d" 0 "did not run and pass"
 
+# Which feature files are bound to Go tests is not a list kept by hand: by default the gate
+# reads every features/*.feature but the apk one. To see that default itself, a copy of the
+# gate runs in a scratch layout with no override.
+layout() { # name -> a scratch repository holding the gates and the apk feature only
+	l="$WORK/$1"; mkdir -p "$l/scripts" "$l/features"
+	cp "$REPO/scripts/gate-scenarios-bound.sh" "$REPO/scripts/gate-apk-parity.sh" "$l/scripts/"
+	cp "$REPO/features/apk-packaging.feature" "$l/features/"
+	echo "$l"
+}
+
+expect_red_layout() { # name layout want
+	set +e
+	OUT=$(env -u BOUND_GO_FEATURES -u BOUND_TEST_DIR BOUND_SKIP_RUN=1 "$2/scripts/gate-scenarios-bound.sh" 2>&1)
+	st=$?
+	set -e
+	if [ "$st" -eq 0 ]; then
+		echo "TEETH FAIL: $1 did not make the gate go red"; echo "$OUT"; rc=1; return
+	fi
+	if ! printf '%s' "$OUT" | grep -q "$3"; then
+		echo "TEETH FAIL: $1 went red, but not with '$3'"; echo "$OUT"; rc=1; return
+	fi
+	echo "teeth ok: $1 -> $3"
+}
+
+l=$(layout no-go-features)
+expect_red_layout "no feature file bound to Go tests" "$l" "no feature file is bound to Go tests"
+
+l=$(layout unlisted-feature)
+printf 'Feature: new\n  Scenario: nobody bound this\n    Given a thing\n' > "$l/features/new.feature"
+expect_red_layout "a new feature file that no list names" "$l" "scenario has no binding"
+
 [ "$rc" -eq 0 ] && echo "gate-scenarios-bound-teeth: every planted fault was caught" || exit 1

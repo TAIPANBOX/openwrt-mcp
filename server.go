@@ -270,6 +270,12 @@ func validateChange(c UCIChange) error {
 		return fmt.Errorf("%s.%s: needs an option to set, a type to create the section, "+
 			"or delete to remove the whole section", c.Config, c.Section)
 	}
+	// uci_get shows a secret as this marker. Written back it would become the secret, and a
+	// Wi-Fi passphrase anyone can read in this source is no passphrase at all.
+	if !c.Delete && strings.Contains(c.Value, redacted) {
+		return fmt.Errorf("%s: the value is the marker uci_get shows in place of a secret, not the secret; "+
+			"ask the operator for the real value", uciKey(c))
+	}
 	return nil
 }
 
@@ -310,8 +316,10 @@ func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, e
 
 	// Refuse to start on top of somebody else's uncommitted edits -- committing those
 	// as a side effect would apply changes nobody asked us for.
+	// The refusal lists them, redacted: a passphrase the owner staged in the web UI is a
+	// secret like any other, and this message goes to the agent.
 	if out, err := run(ctx, defaultCmdTimeout, "uci", "changes"); err == nil && strings.TrimSpace(out) != "" {
-		return "", "", fmt.Errorf("refusing to apply: uncommitted UCI changes already exist:\n%s", out)
+		return "", "", fmt.Errorf("refusing to apply: uncommitted UCI changes already exist:\n%s", redactUCIOutput(out))
 	}
 
 	// Work out which configs are affected before snapshotting: the snapshot covers only
