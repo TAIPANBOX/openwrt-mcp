@@ -14,7 +14,7 @@
 # them, which is the same failure one level up.
 #
 # A second kind of binding covers the features whose scenarios are proved by Go tests rather
-# than by the apk gate (features/owner-unlock.feature). There a scenario is preceded by one or
+# than by the apk gate (features/owner-unlock.feature and every other one). There a scenario is preceded by one or
 # more  "# bound to: TestName[, TestName...]"  comment lines, and the gate asserts both ways:
 # no scenario without a binding, and no binding to a test that does not exist in a *_test.go
 # file. Unless BOUND_SKIP_RUN=1 it also runs the named tests and requires each to PASS, so a
@@ -26,8 +26,12 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 FEATURE="$REPO/features/apk-packaging.feature"
 GATE="$REPO/scripts/gate-apk-parity.sh"
 # Overridable so scripts/gate-scenarios-bound-teeth.sh can point the gate at planted faults.
-GO_FEATURES="${BOUND_GO_FEATURES:-$REPO/features/owner-unlock.feature}"
+# By default every feature file except the apk one, which is bound to the apk gate above: a list
+# kept by hand here is a list a new feature file can be left out of without anything going red.
+GO_FEATURES="${BOUND_GO_FEATURES:-$(ls "$REPO"/features/*.feature 2>/dev/null | grep -v '/apk-packaging\.feature$' || true)}"
 TEST_DIR="${BOUND_TEST_DIR:-$REPO}"   # where the *_test.go files live and where `go test` runs
+# No feature file at all would make the loop below run zero times and report nothing as a pass.
+[ -n "$GO_FEATURES" ] || { echo "FAIL: no feature file is bound to Go tests"; exit 1; }
 
 [ -f "$FEATURE" ] || { echo "FAIL: no $FEATURE"; exit 1; }
 [ -x "$GATE" ]    || { echo "FAIL: $GATE is missing or not executable"; exit 1; }
