@@ -25,14 +25,31 @@ import (
 // It also keeps every administrative operation on one surface.
 
 type statusReport struct {
-	Version  string         `json:"version"`
-	Source   string         `json:"source"`
-	Listen   string         `json:"listen"`
-	Running  bool           `json:"running"`
-	Clients  []clientReport `json:"clients"`
-	Policies []policyReport `json:"policies"`
-	Audit    []auditRow     `json:"audit"`
-	Counts   map[string]int `json:"counts"`
+	Version      string          `json:"version"`
+	Source       string          `json:"source"`
+	Listen       string          `json:"listen"`
+	Running      bool            `json:"running"`
+	Capabilities map[string]bool `json:"capabilities"`
+	Clients      []clientReport  `json:"clients"`
+	Policies     []policyReport  `json:"policies"`
+	Audit        []auditRow      `json:"audit"`
+	Counts       map[string]int  `json:"counts"`
+}
+
+// capabilities are guarantees this binary makes, by name, so a caller can ask for the
+// guarantee it depends on rather than infer it from a version number. A package that grants
+// uci_get on wireless, say, checks uci_get_redacts_credentials first:
+//
+//	openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities.uci_get_redacts_credentials'
+//
+// A name is only ever added, and its value is always true: a binary without the guarantee
+// lacks the key, which reads the same as false.
+func capabilities() map[string]bool {
+	return map[string]bool{
+		// Every uci_get answer has secret option values replaced, for every client, with no
+		// way to turn it off (uci_redact.go).
+		"uci_get_redacts_credentials": true,
+	}
 }
 
 type clientReport struct {
@@ -120,11 +137,12 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 	}
 
 	rep := statusReport{
-		Version: version,
-		Source:  sourceURL,
-		Listen:  cfg.Listen,
-		Running: daemonRunning(cfg.Listen),
-		Counts:  map[string]int{},
+		Version:      version,
+		Source:       sourceURL,
+		Listen:       cfg.Listen,
+		Running:      daemonRunning(cfg.Listen),
+		Capabilities: capabilities(),
+		Counts:       map[string]int{},
 	}
 
 	perClient := map[string]int{}
