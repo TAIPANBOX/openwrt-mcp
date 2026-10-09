@@ -12,6 +12,8 @@
 > [Optional: a second factor for the dangerous tools](#optional-a-second-factor-for-the-dangerous-tools).
 > Since 0.5.0.2 it also keeps the router's secrets out of every `uci_get` answer; see
 > [`uci_get` never returns a secret](#uci_get-never-returns-a-secret).
+> Since 0.5.0.4 an agent the owner allows can install packages, from the official OpenWrt feeds
+> only; see [`apk_add` installs from the official OpenWrt feeds only](#apk_add-installs-from-the-official-openwrt-feeds-only).
 > The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
 > feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
 > upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
@@ -413,6 +415,7 @@ Adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **Grant management is CLI-only** | `pair`/`allow`/`unpair` are not MCP tools, so there's no tool for a policy to cover and no self-escalation path through the policy system. |
 | **Rollback** | `uci_apply` reverts unless confirmed, including across a daemon restart or a reboot: the snapshot lives in `/etc/openwrt-mcp/rollback` (0700), not in RAM-backed `/tmp`. |
 | **No code execution through `uci_apply`** | `uci_apply` refuses, before staging anything, any change that would make the router run a program or load configuration that can: a firewall include, dnsmasq's `dhcpscript`, uhttpd's interpreters, openvpn's scripts and the like. For every client, always, with no switch. See [below](#uci_apply-never-makes-the-router-run-code). |
+| **Package installs** | `apk_add` installs packages by name from the official OpenWrt feeds on `downloads.openwrt.org` and from nowhere else: never a link, a local file, a custom feed or a mirror, and never with signature checks off. Nothing grants it by default. See [below](#apk_add-installs-from-the-official-openwrt-feeds-only). |
 | **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
 
 `ubus_list` is the one ungated tool: introspection returns method names and argument types,
@@ -451,6 +454,7 @@ Both were the first choice; neither works for a resident daemon.
 | `exec` | `argv[0]` | Direct exec, **no shell** — no pipes, globs or redirection, and no quoting surface. |
 | `logread` | *(tool-level)* | Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions are not dropped. Returns the config **and a UTF-8 QR** to scan. Emits a private key — see below. |
+| `apk_add` | the package name, for each package named | Installs packages from the official OpenWrt feeds (OpenWrt 25.12 and later), by name only. `dry_run` lists every package that would be installed or changed and installs nothing. See below. |
 | `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without the right ones, and repeated failures lock it for a while. |
 | `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it can only remove access. |
 
@@ -586,6 +590,84 @@ What it does **not** cover:
   plain file names, and any value with a line break in it, such as multi-line `notes`. The
   operator can still make those changes by hand.
 
+### `apk_add` installs from the official OpenWrt feeds only
+
+An agent setting up a router sometimes needs a package: `tcpdump` to look at traffic, `iperf3`
+to measure a link, a kernel module for a USB modem. The owner can let it install those, and
+only those: `apk_add` takes package names and installs them from the official OpenWrt feeds,
+and from nowhere else.
+
+```
+apk_add {"packages": ["tcpdump"], "dry_run": true}
+
+Dry run: nothing was installed. From the official OpenWrt feeds only (8 feed(s)), apk add tcpdump would:
+  install libpcap1 1.10.6-r1
+  install tcpdump 4.99.6-r1
+Packages beyond the ones named are dependencies apk pulls in.
+
+apk's output:
+(1/2) Installing libpcap1 (1.10.6-r1)
+(2/2) Installing tcpdump (4.99.6-r1)
+OK: 12.5 MiB in 138 packages
+```
+
+- **The owner opts in.** Like every tool, `apk_add` needs a policy that grants it, and the
+  configuration the package ships grants nothing. The policy scope is the package name, so a
+  grant can name the packages an agent may install (`'tcpdump iperf3 kmod-*'`) or allow any
+  (`'*'`): `openwrt-mcp allow claude-code apk_add 'tcpdump iperf3' 1d`. Adding it to the
+  policy's `mfa_tools` puts each install behind the owner's second factor.
+- **Only the official feeds.** apk is given its repositories with `--repositories-file`, a
+  file `apk_add` writes holding only the lines of `/etc/apk/repositories.d/distfeeds.list`
+  (the feeds the firmware ships) that are `https` URLs of a `packages.adb` on
+  `downloads.openwrt.org`. With that option apk reads neither `/etc/apk/repositories` nor any
+  `repositories.d/*.list`, so `customfeeds.list` is never consulted, and a feed someone added
+  to `distfeeds.list` is dropped. A package that exists only in another feed is "no such
+  package" to this tool. If no official line is left, `apk_add` refuses and runs nothing.
+- **No mirrors.** apk checks an index's signature against every key in `/etc/apk/keys`, and a
+  router that uses a custom feed trusts that feed's key there too, so a signature does not say
+  whose index it is. The host does. A router configured to use a mirror gets a refusal.
+- **Signatures are always checked.** No option that loosens apk is ever passed:
+  `--allow-untrusted`, `--force-*`, `--keys-dir`, `--root`, `--arch`, `--repository`. apk is
+  run with `APK_CONFIG=/dev/null`, because apk loads default options from `/etc/apk/config`
+  and one line there, `allow-untrusted`, would turn signature checks off for the call.
+- **Never a link or a file.** A name must be a package name: letters, digits, `+`, `-`, `.`
+  and `_`, beginning with a letter or a digit, up to 100 characters, 1 to 20 names a call.
+  A URL, a path, an option, an `.apk` file, a version constraint such as `name=1.0` (which
+  would pin that version in `/etc/apk/world` and block its upgrades) and a repository tag are
+  refused before apk runs, and the refusal is audited as `DENIED`. apk also reads an argument
+  as a local package file when it has a dot in it and a file of that name exists in the working
+  directory, and official names have dots (`golang1.26`), so apk runs in an empty directory of
+  its own and the names follow `--`.
+- **A dry run first.** With `dry_run`, `apk_add` refreshes the official indexes (`apk update`)
+  and runs `apk add --simulate`, which changes nothing, and lists every package that would be
+  installed, and apart from those, any installed package that would be upgraded. apk does not
+  print how much space an install adds unless it may ask questions, so the answer carries apk's
+  total after the change instead.
+- **A client can check for it** before granting `apk_add`: `openwrt-mcp status --json` reports
+  `"capabilities": {"apk_add_official_feed_only": true}`.
+
+Each of these was measured on 2026-10-09 in OpenWrt's own `openwrt/rootfs:x86-64-25.12.4`
+image, with the apk-tools 3.0.5 it ships: a custom-only package is not found through the
+official repositories file; with `allow-untrusted` in `/etc/apk/config`, an unsigned local file
+installs unless `APK_CONFIG=/dev/null`; and a file named `golang1.26` in the working directory
+is read as that package. The rules for names and for feed lines are each in `apk_add.go`, and
+taking any single one out turns a named test red.
+
+What it does **not** cover:
+
+- **Install scripts.** An official package's install scripts run as root. That is the trust
+  placed in the official, signed OpenWrt feeds, and it is the whole of what `apk_add` trusts.
+- **Dependencies and upgrades.** `apk add` pulls in what a package depends on, and if a new
+  package needs a newer version of an installed library, apk upgrades it. Only the names the
+  agent asked for are checked against the policy scope; the dry run shows the rest.
+- **Removing or upgrading packages on purpose.** There is no `apk del` or `apk upgrade` tool.
+- **opkg.** Routers before OpenWrt 25.12 use opkg, and there `apk_add` fails because there is
+  no apk.
+- **Mirrors and other official hosts.** A router that fetches from a mirror, or from
+  `archive.openwrt.org`, cannot use `apk_add`.
+- **Other tools.** `exec` is a root shell by design: an agent granted `exec` on `apk` can run
+  apk with any option it likes. Do not grant `exec` to an agent that must not install anything.
+
 ### `wg_new_client`
 
 Adding a VPN client by hand is three fiddly steps — generate a keypair, find a free address,
@@ -667,10 +749,15 @@ whole path over a real `ssh -L` tunnel.
 **Verified previously on the Flint 2 and not re-run here:** revocation taking effect without
 a restart, per-client policy isolation.
 
-`go test -list . ./...` lists 226 tests (plus a benchmark and a fuzz target) and `go test ./...`
+`go test -list . ./...` lists 264 tests (plus a benchmark and four fuzz targets) and `go test ./...`
 passes. The `uci_get` redaction was mutation-checked on 2026-10-08: 22 deliberate breaks of
 the redaction and its wiring (a dropped name such as `key1` or `r0kh`, a parser that splits
-on every newline, a missing call), each made a named test fail. Historical, from when the
+on every newline, a missing call), each made a named test fail. `apk_add` was mutation-checked
+on 2026-10-09: 13 deliberate breaks (apk run outside an empty directory, `/etc/apk/config` left
+on, no `--` before the names, `distfeeds.list` unfiltered, the `.apk` or version rule dropped,
+names not checked, `dry_run` not simulating, the tool exempt from policy, the capability gone,
+the host check loosened to any `*openwrt.org`, a refusal audited as an error, the no-feed
+refusal skipped), each made a named test fail. Historical, from when the
 suite had 29 tests and not re-run against the current code: they were mutation-checked, and
 neutering `Authorise` failed 5, neutering `redact` failed 2, neutering the response pruner failed 2, and removing the pruner *call* from
 `ubus_call` failed 1 — that last test exists because an earlier version of the pruner had

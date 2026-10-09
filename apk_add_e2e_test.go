@@ -135,8 +135,15 @@ func assertOfficialApkCalls(t *testing.T, r *apkRig, names []string, dryRun bool
 		t.Fatalf("apk ran %d times, want update then add: %+v", len(cs), cs)
 	}
 	repoPath := cs[0].argv[1]
-	wantUpdate, wantAdd := apkArgv(repoPath, names, dryRun)
-	for i, want := range [][]string{wantUpdate[1:], wantAdd[1:]} {
+	// Spelled out here rather than taken from apkArgv, so a change there cannot change what
+	// this test expects with it.
+	wantUpdate := []string{"--repositories-file", repoPath, "--no-interactive", "update"}
+	wantAdd := []string{"--repositories-file", repoPath, "--no-interactive", "add"}
+	if dryRun {
+		wantAdd = append(wantAdd, "--simulate")
+	}
+	wantAdd = append(append(wantAdd, "--"), names...)
+	for i, want := range [][]string{wantUpdate, wantAdd} {
 		if got := strings.Join(cs[i].argv, " "); got != strings.Join(want, " ") {
 			t.Errorf("call %d argv:\n  %s\nwant:\n  %s", i, got, strings.Join(want, " "))
 		}

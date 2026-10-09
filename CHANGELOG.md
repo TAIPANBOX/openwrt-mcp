@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.5.0-taipanbox.4 (binary version 0.5.0.4)
+
+**`apk_add` installs packages from the official OpenWrt feeds, and from nowhere else.** An
+agent may install packages only from the official OpenWrt feed, and only where the owner has
+opted in; never from a link, never from a local file, never with signature checks off.
+
+### Added
+
+- `apk_add {packages, dry_run}`: installs 1 to 20 packages by name on OpenWrt 25.12 and later.
+  Granted like any other tool, by a policy whose scope is the package name (`'tcpdump'`,
+  `'kmod-*'`, `'*'`); the shipped configuration grants it to nobody.
+- apk is given `--repositories-file` naming a file that holds only the lines of
+  `/etc/apk/repositories.d/distfeeds.list` that are `https` URLs of a `packages.adb` on
+  `downloads.openwrt.org`. `customfeeds.list`, any other feed, mirrors, http, local paths,
+  tagged lines and look-alike hosts are not used, and the call is refused when no official
+  line is left. A line that is not used is counted, never repeated: a private feed's URL can
+  carry a token.
+- apk runs with `APK_CONFIG=/dev/null`, so `/etc/apk/config` cannot add `allow-untrusted` or a
+  repository, and in an empty directory of its own, since `apk add` reads a dotted argument as
+  a local file when one of that name exists in the working directory. The argv is fixed:
+  `apk --repositories-file <file> --no-interactive update`, then
+  `apk --repositories-file <file> --no-interactive add [--simulate] -- <names>`.
+- Refused before apk runs, audited as `DENIED`: an empty list or more than 20 names, a URL, a
+  path, a name beginning with `-` or `.`, an `.apk` file name, a version constraint (`=`, `<`,
+  `>`, `~`), a repository tag (`@`), `:`, `..`, a name over 100 characters, and anything
+  outside letters, digits, `+`, `-`, `.`, `_`. Upper case is allowed: official names such as
+  `UDPspeeder` and `cJSON` have it.
+- `dry_run` runs `apk update` and `apk add --simulate` against the official feeds and lists
+  every package that would be installed, with any installed package that would be upgraded
+  listed apart. Output is bounded to 16 KiB, keeping apk's verdict at the end.
+- `status --json` capabilities carry `"apk_add_official_feed_only": true`.
+- `features/apk-add-official-feed.feature`, 13 scenarios bound to 21 tests.
+
+### Not covered
+
+- An official package's install scripts run as root: that is the trust in the official
+  signed feeds. apk add pulls in dependencies and may upgrade an installed library a new
+  package needs; only the names asked for are checked against the policy scope.
+- Routers on a mirror or on `archive.openwrt.org`, and opkg-based routers, cannot use it.
+- `exec` granted on `apk` is still a way to run apk with any option.
+
 ## v0.5.0-taipanbox.3 (binary version 0.5.0.3)
 
 **`uci_apply` never makes the router run code as root.** A policy is a glob over
