@@ -92,7 +92,7 @@ var apkNameRules = []struct {
 	bad       func(string) bool
 }{
 	{"empty", "an empty name", func(n string) bool { return n == "" }},
-	{"flag", "begins with '-', which apk would read as an option",
+	{"flag", "a name that begins with '-', which apk would read as an option",
 		func(n string) bool { return strings.HasPrefix(n, "-") }},
 	{"url", "a URL; apk_add installs from the official OpenWrt feeds only, never from a link",
 		func(n string) bool { return strings.Contains(n, "://") }},
@@ -105,11 +105,11 @@ var apkNameRules = []struct {
 		func(n string) bool { return strings.ContainsAny(n, "=<>~") }},
 	{"tag", "a repository tag (@); apk_add uses the untagged official feeds only",
 		func(n string) bool { return strings.Contains(n, "@") }},
-	{"colon", "contains ':', which no package name holds",
+	{"colon", "a name that contains ':', which no package name holds",
 		func(n string) bool { return strings.Contains(n, ":") }},
-	{"virtual", "begins with '.', which apk uses for virtual packages",
+	{"virtual", "a name that begins with '.', which apk uses for virtual packages",
 		func(n string) bool { return strings.HasPrefix(n, ".") }},
-	{"dotdot", "contains '..', which no official name holds and every path that climbs does",
+	{"dotdot", "a name that contains '..', which no official name holds and every path that climbs does",
 		func(n string) bool { return strings.Contains(n, "..") }},
 	{"too-long", fmt.Sprintf("longer than %d characters; the longest official name is 50", apkMaxNameLen),
 		func(n string) bool { return len(n) > apkMaxNameLen }},
