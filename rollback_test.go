@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,21 @@ func (r *rollbackRig) server(t *testing.T) *Server {
 func (r *rollbackRig) read(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(r.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// readWhilePresent is read for a loop that waits on a rollback: the restore unpacks the snapshot
+// with tar, which unlinks the file and writes it again, so for a moment it does not exist. That is
+// "not yet", not a failure (the timer test once failed on exactly that moment in CI).
+func (r *rollbackRig) readWhilePresent(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(r.configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

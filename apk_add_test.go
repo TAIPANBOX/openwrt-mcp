@@ -367,3 +367,14 @@ func TestBoundApkOutput(t *testing.T) {
 			strings.Contains(got, "cut"), strings.HasSuffix(got, "OK: 99 MiB in 9 packages\n"))
 	}
 }
+
+// TestApkNameRuleReasonsReadAfterIs: a refusal is "refused: %q is <why>", so every why must read
+// after "is". Four of them once began with a verb and the agent was told `"-x" is begins with '-'`.
+func TestApkNameRuleReasonsReadAfterIs(t *testing.T) {
+	for _, r := range apkNameRules {
+		if !(strings.HasPrefix(r.why, "a ") || strings.HasPrefix(r.why, "an ") || strings.HasPrefix(r.why, "longer than ") ||
+			strings.HasPrefix(r.why, "outside ")) {
+			t.Errorf("rule %q: %q does not read after \"is\"", r.name, r.why)
+		}
+	}
+}
