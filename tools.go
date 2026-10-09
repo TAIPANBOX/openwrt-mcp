@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -17,12 +18,24 @@ const defaultCmdTimeout = 30 * time.Second
 // run executes argv directly -- never through a shell -- so there is no quoting or
 // injection surface regardless of what the model puts in the arguments.
 func run(ctx context.Context, timeout time.Duration, argv ...string) (string, error) {
+	return runIn(ctx, timeout, "", nil, argv...)
+}
+
+// runIn is run() in a chosen working directory with extra environment variables (each
+// "NAME=value", later ones winning over the daemon's own). apk_add needs both: apk reads an
+// argument with a dot in it as a local file when one of that name exists in the working
+// directory, and it loads default options from $APK_CONFIG or /etc/apk/config.
+func runIn(ctx context.Context, timeout time.Duration, dir string, env []string, argv ...string) (string, error) {
 	if timeout <= 0 {
 		timeout = defaultCmdTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = dir
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -433,6 +446,18 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 		func(ctx context.Context, in wgNewClientIn) (string, string, error) {
 			return s.wgNewClient(ctx, in)
 		})
+
+	addTool(s, srv, client, "apk_add",
+		"Install packages from the official OpenWrt feeds (OpenWrt 25.12 and later, which use apk). "+
+			"Give package names only, e.g. ['tcpdump']: no version, no path, no URL and no .apk file, "+
+			"which are refused. Packages come only from the official feeds the firmware ships "+
+			"(downloads.openwrt.org), never from a custom feed, a mirror or a local file, and signatures "+
+			"are always checked. apk pulls in dependencies and may upgrade an installed library a new "+
+			"package needs, so call it with dry_run first: that shows every package that would be "+
+			"installed or changed and installs nothing. An official package's install scripts run as "+
+			"root. Policy scope is the package name, and every name must be covered by one policy.",
+		func(in apkAddIn) []string { return in.Packages },
+		apkAdd)
 
 	addTool(s, srv, client, "mfa_unlock",
 		"Unlock the tools this client's policy marks as needing a second factor. Which factor is "+

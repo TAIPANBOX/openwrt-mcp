@@ -52,6 +52,10 @@ func capabilities() map[string]bool {
 		// uci_apply refuses, before staging anything and for every client, any change that would
 		// make the router run code as root: an include, a dhcpscript, a hook (uci_noexec.go).
 		"uci_apply_refuses_code_exec": true,
+		// apk_add installs by name from downloads.openwrt.org's feeds in distfeeds.list and
+		// nowhere else: never a URL, a local file, a custom feed or a mirror, never with
+		// signature checks off, and only for a client a policy grants it to (apk_add.go).
+		"apk_add_official_feed_only": true,
 	}
 }
 
