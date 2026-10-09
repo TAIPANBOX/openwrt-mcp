@@ -50,6 +50,27 @@ func TestCLIStatusJSONSaysUciApplyRefusesCodeExec(t *testing.T) {
 	}
 }
 
+// A package or an operator that grants apk_add checks first that this binary installs from the
+// official OpenWrt feeds only, read from status --json as plain JSON.
+func TestCLIStatusJSONSaysApkAddIsOfficialFeedOnly(t *testing.T) {
+	c := newCLI(t)
+	if err := os.WriteFile(c.cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code := c.run("", "status", "--json", "--audit", "0")
+	if code != 0 {
+		t.Fatalf("status: exit %d, %q %q", code, out, errOut)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("status --json is not JSON: %v\n%s", err, out)
+	}
+	caps, _ := rep["capabilities"].(map[string]any)
+	if caps["apk_add_official_feed_only"] != true {
+		t.Errorf("capabilities = %v; a caller cannot tell that apk_add installs from the official feeds only\n%s", rep["capabilities"], out)
+	}
+}
+
 // The package version is read out of main.go by the Makefile (and by the feed's build script)
 // and handed to `apk mkpkg`. apk takes digits and dots, an optional letter, and its own
 // suffixes, nothing else: a fork-style "0.5.0-taipanbox.2" would build an .ipk and then fail
