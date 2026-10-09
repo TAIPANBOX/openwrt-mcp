@@ -289,7 +289,7 @@ func TestAnUnconfirmedApplyRollsItselfBackWhenTheTimerFires(t *testing.T) {
 	}
 	os.WriteFile(r.configPath, []byte("changed by apply\n"), 0o644)
 	deadline := time.Now().Add(10 * time.Second)
-	for r.read(t) != "original\n" {
+	for r.readWhilePresent(t) != "original\n" {
 		if time.Now().After(deadline) {
 			t.Fatal("the timer never rolled the change back")
 		}
