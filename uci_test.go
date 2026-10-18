@@ -166,7 +166,7 @@ func TestUciGetScope(t *testing.T) {
 // which addresses bare "<config>". "<config>*" (no dot) covers everything under the config.
 func TestUciGetScopeCoverage(t *testing.T) {
 	covered := func(glob, scope string) bool {
-		_, ok := firstUncovered([]string{glob}, []string{scope})
+		_, ok := firstUncovered("uci_get", []string{glob}, []string{scope})
 		return ok
 	}
 	if !covered("dhcp.*", "dhcp.lan") || !covered("dhcp.*", "dhcp.lan.ip") {

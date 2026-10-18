@@ -17,6 +17,9 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./... -count=1
+      # The WireGuard private key never reaches a command line, and the gate's own teeth
+      # prove the gate would notice if it did.
+      - run: ./scripts/gate-wg-key-off-argv.sh && ./scripts/gate-wg-key-off-argv-teeth.sh
 
       # The package is only useful if it builds for the router, so build it here
       # rather than finding out at install time on someone's only router.

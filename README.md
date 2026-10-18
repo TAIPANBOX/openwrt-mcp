@@ -81,8 +81,11 @@ The agent calls `ubus_list` to see what's available (`iwinfo`, `network.wireless
 and cannot change anything:
 
 ```sh
-openwrt-mcp allow claude-code ubus_call,logread 'network.* iwinfo.* luci-rpc.* gl-*' 30d
+openwrt-mcp allow claude-code ubus_call,logread 'network.* network.*.* iwinfo.* luci-rpc.* gl-*.*' 30d
 ```
+
+The `ubus_call` scopes are object and method pairs, so `network.*` names the object `network`
+only and `gl-*.*` names the `gl-*` objects; see [`ubus_call` grants](#ubus_call-grants-are-object-and-method-pairs).
 
 ### 2. "The wifi has been dropping out"
 
@@ -193,7 +196,7 @@ cross-compiled on your machine. `make` uses whatever `go` is on your PATH; overr
 
 ```sh
 TOK=$(ssh root@192.168.8.1 'openwrt-mcp pair claude-code')
-ssh root@192.168.8.1 "openwrt-mcp allow claude-code ubus_list,ubus_call,logread 'network.* iwinfo.* system.*' 30d"
+ssh root@192.168.8.1 "openwrt-mcp allow claude-code ubus_list,ubus_call,logread 'network.* network.*.* iwinfo.* system.*' 30d"
 ```
 
 Nothing is granted by default. Start narrow: a refusal names the uncovered scope and prints
@@ -416,6 +419,9 @@ Adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **Rollback** | `uci_apply` reverts unless confirmed, including across a daemon restart or a reboot: the snapshot lives in `/etc/openwrt-mcp/rollback` (0700), not in RAM-backed `/tmp`. |
 | **No code execution through `uci_apply`** | `uci_apply` refuses, before staging anything, any change that would make the router run a program or load configuration that can: a firewall include, dnsmasq's `dhcpscript`, uhttpd's interpreters, openvpn's scripts and the like. For every client, always, with no switch. See [below](#uci_apply-never-makes-the-router-run-code). |
 | **Package installs** | `apk_add` installs packages by name from the official OpenWrt feeds on `downloads.openwrt.org` and from nowhere else: never a link, a local file, a custom feed or a mirror, and never with signature checks off. Nothing grants it by default. See [below](#apk_add-installs-from-the-official-openwrt-feeds-only). |
+| **exec arguments** | `exec` runs a program only with an argument form its policy names. A program granted with no form runs with no arguments. See [below](#exec-runs-only-the-argument-forms-its-grant-names). |
+| **Secrets in the audit log** | A value is written as `<redacted>` when the option, the section or the argument it travels in names a credential. Names stay visible, so the log still shows what changed. See [below](#the-audit-log-never-holds-a-secrets-value). |
+| **WireGuard private key** | A new client's private key reaches uci on standard input, never as an argument, where every process on the router could read it. |
 | **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
 
 `ubus_list` is the one ungated tool: introspection returns method names and argument types,
@@ -447,16 +453,84 @@ Both were the first choice; neither works for a resident daemon.
 | Tool | Policy scope | |
 |---|---|---|
 | `ubus_list` | *(ungated)* | Objects, methods and argument signatures. The discovery tool. |
-| `ubus_call` | `<object>.<method>` | The workhorse: netifd, wireless, dnsmasq, iwinfo, luci-rpc, `gl-*`. Replies over 8 KB have long arrays pruned — see Findings. |
+| `ubus_call` | `<object>.<method>`, matched as a pair | The workhorse: netifd, wireless, dnsmasq, iwinfo, luci-rpc, `gl-*`. A grant covers the object and the method it names; see [below](#ubus_call-grants-are-object-and-method-pairs). Replies over 8 KB have long arrays pruned — see Findings. |
 | `uci_apply` | `<config>.<section>.<option>`, or `<config>.<section>` for a section-level change | Stage → snapshot → commit → reload, rollback armed. Sets options, and creates or deletes whole sections. All scopes must be covered by one policy. |
 | `uci_confirm` | *(tool-level)* | Cancels the rollback timer. |
 | `uci_get` | `<config>`, `<config>.<section>` or `<config>.<section>.<option>` | Reads configuration as `config.section.option=value` lines, narrowed by config, section or option: the read path `uci_apply` lacks, safer than an exec shell for inspecting state first. A section- or option-level read is covered by a `<config>.*` grant; a whole-config read needs `<config>`. Secret values read `'<redacted>'`, see below. |
-| `exec` | `argv[0]` | Direct exec, **no shell** — no pipes, globs or redirection, and no quoting surface. |
+| `exec` | `argv[0]`, and the argument forms the policy names for it | Direct exec, **no shell** — no pipes, globs or redirection, and no quoting surface. A program with no argument form runs with no arguments; see [below](#exec-runs-only-the-argument-forms-its-grant-names). |
 | `logread` | *(tool-level)* | Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions are not dropped. Returns the config **and a UTF-8 QR** to scan. Emits a private key — see below. |
 | `apk_add` | the package name, for each package named | Installs packages from the official OpenWrt feeds (OpenWrt 25.12 and later), by name only. `dry_run` lists every package that would be installed or changed and installs nothing. See below. |
 | `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without the right ones, and repeated failures lock it for a while. |
 | `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it can only remove access. |
+
+### `exec` runs only the argument forms its grant names
+
+An `exec` grant has two parts, and both are decided before the program starts. The program is
+`argv[0]`, the policy scope as before. The argument forms are optional: a program the policy gives
+no `argv` line runs with **no arguments**, and a program with `argv` lines runs only in a form one
+of them names.
+
+```
+config policy 'logs'
+	option client 'claude-code'
+	list tools 'exec'
+	list scopes 'logread'
+	list scopes 'wg'
+	list argv 'logread -l *'
+	list argv 'wg show'
+```
+
+- An `argv` line is a program pattern followed by one pattern per argument. A pattern is an exact
+  argument, or a glob in which `*` stands for any text inside one argument.
+- A `*` never crosses a `/`, and an argument with a `..` component is never matched by a glob:
+  `/etc/config/*` names the files in that directory and nothing above it. Name an exact path where
+  it matters.
+- The argument count must match exactly, and an argument with a space cannot be granted by pattern,
+  because each line is split on spaces.
+- Each policy answers for itself. One policy's forms never widen another policy's grant.
+- An `argv` line for a program the policy does not grant, or in a policy that does not grant
+  `exec`, stops the configuration from loading.
+- `openwrt-mcp allow` writes scopes only. Argument forms are edited in `/etc/config/openwrt-mcp`.
+
+Before this rule a granted program ran with any arguments. An existing `exec` grant that is used
+with arguments needs its `argv` lines; the refusal names the form it lacks. A grant of a shell
+(`sh`, `busybox`, `env`) with a form such as `sh -c *` is still a shell, so do not grant one to an
+agent that must not run commands.
+
+### `ubus_call` grants are object and method pairs
+
+A `ubus_call` scope is `<object>.<method>`, and a grant covers the object and the method it names,
+each matched on its own. The object part of a grant ends at its last dot:
+
+- `iwinfo.*` covers every method of the object `iwinfo`, and not `iwinfo.devices`, which is a
+  different object.
+- `network.*` covers the object `network` only. To cover the objects below it as well, add
+  `network.*.*`.
+- `iwinfo.devices` covers exactly that one method.
+- `*` covers every object and method.
+
+A grant with no dot, such as `gl-*`, covers nothing; write `gl-*.*`. An object or method that is not
+a plain ubus name is refused under every grant: an object is letters, digits, dots, dashes and
+underscores, a method is the same without dots, and neither begins with a dash. Before this rule,
+`network.*` covered every object beginning `network.` and `gl-*` covered every `gl` object. Both
+grants need the forms above now.
+
+### The audit log never holds a secret's value
+
+Every call is written to the audit log with its arguments. The recorder redacts a value by name:
+
+- A `uci_apply` change whose **option** or whose **section** names a credential has its `value`
+  replaced by `<redacted>`. A credential name is one the router's own config uses for a secret
+  (`key`, `password`, `private_key`, `psk`, `secret`, `token` and the rest of the list in
+  `uci_redact.go`), or one the log has always redacted.
+- An `exec` argument of the form `name=value` whose name is a credential has its value replaced,
+  and so does the argument after a credential name (`private-key FILE`, `--password VALUE`). The
+  summary on the audit line is built from the same redacted arguments.
+
+Option and section names stay visible, and a WireGuard `public_key` is not a secret, so it stays.
+Not covered: a secret under a name that gives no sign of it, and what a tool returns to the client.
+`uci_get` redacts its answers; `exec`, `ubus_call` and `logread` do not.
 
 ### `uci_get` never returns a secret
 
@@ -573,9 +647,10 @@ Nothing in this batch was applied. Ask the operator to make that change by hand 
 
 What it does **not** cover:
 
-- **Other tools.** `exec` is a root shell by design and is held back only by policy and the
-  second factor: do not grant it to an agent that must not run commands. `ubus_call` reaches
-  rpcd's `file.exec` and every service's own ubus methods.
+- **Other tools.** `exec` is a root shell by design and is held back by policy, by the argument
+  forms the policy names and by the second factor: do not grant it to an agent that must not run
+  commands, and do not grant a program that is a shell with a form that passes arbitrary text.
+  `ubus_call` reaches rpcd's `file.exec` and every service's own ubus methods a grant covers.
 - **Options that write a file, or read data from one**: dnsmasq's and odhcpd's `leasefile`,
   openvpn's `log`, dnsmasq's `addnhosts` and `serversfile`, hostapd's `eap_user_file`. These
   are data, not code, though a file written into the wrong place can become code at the next
@@ -699,6 +774,11 @@ Scan with the WireGuard app:
     ...
 ```
 
+The private key is handled as key material. The peer is staged with one `uci batch` fed on standard
+input, because an argument list is readable by every process on the router while its command runs.
+A name or DNS or allowed-IPs value holding a quote, a backslash or a control character is refused
+before uci writes anything.
+
 Three things it does deliberately:
 
 - **Hot-adds with `wg set`** rather than restarting the interface. A restart drops every
@@ -798,8 +878,12 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
 - There is **no permanent denylist**. `sysupgrade`, `firstboot` and `mtd` are reachable if a
   policy grants them. That was a deliberate choice; keep recovery access to hand.
 - A broadly scoped `exec` grant is a root shell, and from a root shell `openwrt-mcp allow`
-  grants anything else. Scoped grants (`exec` limited to named binaries) keep the policy
-  engine meaningful; an unscoped one reduces it to an audit trail.
+  grants anything else. Scoped grants (`exec` limited to named binaries, each with the argument
+  forms it needs) keep the policy engine meaningful; an unscoped one reduces it to an audit trail.
+- An argument form is a pattern, not a program. `sh -c *` is a shell, and a `*` in an argument
+  matches any text, dots and dashes included, within that one argument. Exact forms are safer.
+- A value under a name that gives no sign of being a secret is written to the audit log as it
+  is. The redaction is by name, so a password under `ppp.pppd_options` is not caught.
 - Unlock windows, failure counts and lockouts live in the daemon's memory only, so a restart
   re-locks everything but also forgives a lockout. For the same reason `openwrt-mcp status
   --json` (a separate process) reports each client's `mfa` object with `live_state: false`: the

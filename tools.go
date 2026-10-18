@@ -369,11 +369,12 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			return out, "listed ubus objects", err
 		})
 
-	addTool(s, srv, client, "ubus_call",
+	addToolShaped(s, srv, client, "ubus_call",
 		"Call any ubus method on the router. This is the main tool -- netifd, wireless, dnsmasq, "+
 			"iwinfo, luci-rpc and the vendor's gl-* objects are all reachable through it. "+
-			"Policy scope is the string \"<object>.<method>\".",
-		func(in ubusCallIn) []string { return []string{in.Object + "." + in.Method} },
+			"Policy scope is the string \"<object>.<method>\", matched as a pair: a grant covers "+
+			"the object and the method it names, and a dot in the method is refused.",
+		ubusCallShape,
 		ubusCall)
 
 	addTool(s, srv, client, "uci_apply",
@@ -415,21 +416,15 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 		uciGetScope,
 		uciGet)
 
-	addTool(s, srv, client, "exec",
+	addToolShaped(s, srv, client, "exec",
 		"Run a command on the router. argv is executed directly with no shell, so pipes, redirection and "+
-			"globs do not work -- pass a single program and its arguments. Policy scope is argv[0].",
-		func(in execIn) []string {
-			if len(in.Argv) == 0 {
-				return nil
-			}
-			return []string{in.Argv[0]}
-		},
+			"globs do not work -- pass a single program and its arguments. Policy scope is argv[0], and "+
+			"the arguments must match an argument form the policy names for that program (a program "+
+			"granted with no forms runs with no arguments). Output is returned unredacted.",
+		execShape,
 		func(ctx context.Context, in execIn) (string, string, error) {
-			if len(in.Argv) == 0 {
-				return "", "", fmt.Errorf("argv must not be empty")
-			}
 			out, err := run(ctx, clampSec(in.Timeout, 30, 300), in.Argv...)
-			return out, strings.Join(in.Argv, " "), err
+			return out, strings.Join(redactArgv(in.Argv), " "), err
 		})
 
 	addTool(s, srv, client, "wg_new_client",
@@ -532,20 +527,61 @@ func clampSec(v, def, max int) time.Duration {
 	return time.Duration(v) * time.Second
 }
 
-// addTool registers one tool behind the shared policy+audit gate.
-//
-// scopeOf derives the policy scope strings from the typed input; fn does the work and
-// returns (output, summary, error). Neither can bypass the gate: authorisation happens
-// in this wrapper, before fn is ever called.
+// callShape is what the gate needs to know about one call before it may run: the scope strings
+// the policy globs are matched against, the argument vector for a tool that runs one (nil for
+// every other tool), and a refusal for a call that is malformed whatever the grants say.
+type callShape struct {
+	scopes  []string
+	argv    []string
+	refusal string
+}
+
+// ubusCallShape refuses an object or method that is not a plain ubus name before any grant is
+// read: a name that could be read as a flag, or a method with a dot, would otherwise be matched
+// as a different pair than the one ubus is asked to call.
+func ubusCallShape(in ubusCallIn) callShape {
+	if !ubusNameOK(in.Object, false) || !ubusNameOK(in.Method, true) {
+		return callShape{refusal: fmt.Sprintf(
+			"denied: %q.%q is not an object and method pair: an object is letters, digits, dots, "+
+				"dashes and underscores, a method the same without dots, and neither begins with a dash",
+			in.Object, in.Method)}
+	}
+	return callShape{scopes: []string{in.Object + "." + in.Method}}
+}
+
+// execShape scopes exec on argv[0] and carries the whole argument vector to the policy, which
+// decides the arguments with the same grant that covers the program.
+func execShape(in execIn) callShape {
+	if len(in.Argv) == 0 {
+		return callShape{refusal: "denied: argv must not be empty"}
+	}
+	return callShape{scopes: []string{in.Argv[0]}, argv: in.Argv}
+}
+
+// addTool registers one tool behind the shared policy+audit gate. scopeOf derives the policy
+// scope strings from the typed input; it is addToolShaped for a tool that needs no more than
+// that.
 func addTool[In any](s *Server, srv *mcp.Server, client, name, desc string,
 	scopeOf func(In) []string,
+	fn func(context.Context, In) (string, string, error),
+) {
+	addToolShaped(s, srv, client, name, desc, func(in In) callShape {
+		return callShape{scopes: scopeOf(in)}
+	}, fn)
+}
+
+// addToolShaped registers one tool behind the shared policy+audit gate. shapeOf says what the
+// call is; fn does the work and returns (output, summary, error). Neither can bypass the gate:
+// authorisation happens in this wrapper, before fn is ever called.
+func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string,
+	shapeOf func(In) callShape,
 	fn func(context.Context, In) (string, string, error),
 ) {
 	mcp.AddTool(srv, &mcp.Tool{Name: name, Description: desc},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 			started := time.Now()
-			scopes := scopeOf(in)
-			ev := AuditEvent{Time: nowISO(), Client: client, Tool: name, Scope: strings.Join(scopes, " ")}
+			shape := shapeOf(in)
+			ev := AuditEvent{Time: nowISO(), Client: client, Tool: name, Scope: strings.Join(shape.scopes, " ")}
 			if b, err := json.Marshal(in); err == nil {
 				var m any
 				if json.Unmarshal(b, &m) == nil {
@@ -559,6 +595,10 @@ func addTool[In any](s *Server, srv *mcp.Server, client, name, desc string,
 				return res, nil, nil
 			}
 
+			// A malformed call is refused whatever the grants say, before they are read.
+			if shape.refusal != "" {
+				return finish(errResult(shape.refusal), OutcomeDenied, "", shape.refusal)
+			}
 			// ubus_list is introspection only and is never gated; everything else must be
 			// covered by a standing policy. Denial is the default.
 			//
@@ -569,7 +609,7 @@ func addTool[In any](s *Server, srv *mcp.Server, client, name, desc string,
 			// mfa_lock is exempt because it can only remove access, never add it.
 			if name != "ubus_list" && name != "mfa_unlock" && name != "mfa_lock" {
 				now := time.Now()
-				p, reason := s.cfg().AuthorisePolicy(client, name, scopes, now)
+				p, reason := s.cfg().authorise(client, name, shape.scopes, shape.argv, now)
 				if p == nil {
 					return finish(errResult(reason), OutcomeDenied, "", reason)
 				}
