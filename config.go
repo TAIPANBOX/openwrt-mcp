@@ -108,9 +108,12 @@ func splitUCI(line string) ([]string, bool) {
 // ---------------------------------------------------------------- policies
 
 type Policy struct {
-	Client    string
-	Tools     []string
-	Scopes    []string // globs matched against a per-tool scope string
+	Client string
+	Tools  []string
+	Scopes []string // globs matched against a per-tool scope string
+	// Argv is the argument lists exec may run each granted program with. A program with none
+	// here runs with no arguments. See argvAllowed.
+	Argv      []argvGrant
 	MaxPerMin int
 	Expires   time.Time // zero == never expires
 	Enabled   bool
@@ -238,6 +241,23 @@ func policyFromSection(s uciSection) (*Policy, error) {
 	if len(p.Tools) == 0 {
 		return nil, fmt.Errorf("grants no tools")
 	}
+	// One entry is "program pattern..." (`list argv 'logread -l *'`). An argument list that
+	// names a program this policy does not grant, or sits where exec is not granted, is a
+	// configuration error, because it would otherwise look like a grant and grant nothing.
+	for _, entry := range s.Lists["argv"] {
+		fields := strings.Fields(entry)
+		if len(fields) == 0 {
+			return nil, fmt.Errorf("empty 'argv' entry")
+		}
+		g := argvGrant{program: fields[0], args: fields[1:]}
+		if !contains(p.Tools, "exec") {
+			return nil, fmt.Errorf("argv %q needs exec among this policy's tools", g.program)
+		}
+		if !matchAny(p.Scopes, g.program) {
+			return nil, fmt.Errorf("argv names %q, which this policy's scopes do not grant", g.program)
+		}
+		p.Argv = append(p.Argv, g)
+	}
 	if v, err := strconv.Atoi(s.Options["max_per_min"]); err == nil && v > 0 {
 		p.MaxPerMin = v
 	}
@@ -325,8 +345,18 @@ func (c *Config) Authorise(client, tool string, scopes []string, now time.Time) 
 // to know whether that grant additionally demands a second factor. Authorise remains as the
 // boolean form because most callers only ask "may I".
 func (c *Config) AuthorisePolicy(client, tool string, scopes []string, now time.Time) (*Policy, string) {
+	return c.authorise(client, tool, scopes, nil, now)
+}
+
+// authorise is the one decision behind every tool. argv is nil for a tool with no argument
+// vector; exec passes its whole argv, and then the policy that covers the program must also
+// cover the arguments, in that same policy.
+func (c *Config) authorise(client, tool string, scopes, argv []string, now time.Time) (*Policy, string) {
+	if argv != nil && len(argv) == 0 {
+		return nil, "denied: argv must not be empty"
+	}
 	var sawClientTool bool
-	var uncovered string
+	var uncovered, argvRefused string
 	for _, p := range c.Policies {
 		if !p.Enabled || p.Client != client || !contains(p.Tools, tool) {
 			continue
@@ -335,14 +365,23 @@ func (c *Config) AuthorisePolicy(client, tool string, scopes []string, now time.
 			continue
 		}
 		sawClientTool = true
-		if miss, ok := firstUncovered(p.Scopes, scopes); !ok {
+		if miss, ok := firstUncovered(tool, p.Scopes, scopes); !ok {
 			uncovered = miss
 			continue
+		}
+		if argv != nil {
+			if ok, why := p.argvAllowed(argv); !ok {
+				argvRefused = why
+				continue
+			}
 		}
 		if !p.takeToken(now) {
 			return nil, fmt.Sprintf("rate limit: policy for %q allows %d calls/min to %s", client, p.MaxPerMin, tool)
 		}
 		return p, ""
+	}
+	if argvRefused != "" {
+		return nil, argvRefused
 	}
 	if sawClientTool && uncovered != "" {
 		return nil, fmt.Sprintf("denied: %s is granted to %q but no policy scope covers %q\n"+
@@ -352,15 +391,136 @@ func (c *Config) AuthorisePolicy(client, tool string, scopes []string, now time.
 		"  grant it: openwrt-mcp allow %s %s '%s' 60m", tool, client, client, tool, orStar(strings.Join(scopes, " ")))
 }
 
-// firstUncovered returns the first scope not matched by any glob. ok is true only when
-// every scope is covered (vacuously true for an empty scope list).
-func firstUncovered(globs, scopes []string) (string, bool) {
+// firstUncovered returns the first scope no glob covers. ok is true only when every scope is
+// covered (vacuously true for an empty scope list).
+func firstUncovered(tool string, globs, scopes []string) (string, bool) {
 	for _, s := range scopes {
-		if !matchAny(globs, s) {
+		if !scopeCovered(tool, globs, s) {
 			return s, false
 		}
 	}
 	return "", true
+}
+
+// scopeCovered reports whether one of a policy's globs covers a scope. For ubus_call a scope
+// is an object and a method, and a glob covers it only when it covers the object and the method
+// separately. A glob's object part ends at its last dot, so "network.*" covers the object
+// "network" and its methods, and not "network.interface.lan", whose name merely begins the same
+// way.
+func scopeCovered(tool string, globs []string, scope string) bool {
+	if tool != "ubus_call" {
+		return matchAny(globs, scope)
+	}
+	obj, method, ok := splitUbusScope(scope)
+	if !ok {
+		return false
+	}
+	for _, g := range globs {
+		if g == "*" {
+			return true
+		}
+		gobj, gmethod, ok := splitUbusScope(g)
+		if ok && globOK(gobj, obj) && globOK(gmethod, method) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitUbusScope splits "object.method" at its last dot. The method of a call never holds a dot
+// (ubusNameOK refuses one), so this is exact for a call; for a grant, the last dot ends the
+// object part.
+func splitUbusScope(s string) (string, string, bool) {
+	i := strings.LastIndexByte(s, '.')
+	if i <= 0 || i == len(s)-1 {
+		return "", "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+func globOK(pattern, s string) bool {
+	ok, err := path.Match(pattern, s)
+	return err == nil && ok
+}
+
+// ubusNameOK reports whether s can be a ubus object or method name as the call passes it. A
+// name may not begin with a dash, which ubus's own option parser would read as a flag. An
+// object may hold dots (network.interface.lan); a method may not, because the scope joins the
+// two with a dot and only a method without one can be split back into the pair that was asked.
+func ubusNameOK(s string, method bool) bool {
+	if s == "" || s[0] == '-' {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		case c == '.' && !method:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// argvGrant is one argument list in a policy: the program it is for, and one pattern per
+// argument, in order.
+type argvGrant struct {
+	program string
+	args    []string
+}
+
+// argvAllowed reports whether this policy lets argv run. A program this policy gives no argument
+// list runs with no arguments at all; a program that has lists runs only in a form one of them
+// names. Each policy answers for itself, so one policy's list never widens another's grant.
+func (p *Policy) argvAllowed(argv []string) (bool, string) {
+	prog, args := argv[0], argv[1:]
+	listed := false
+	for _, g := range p.Argv {
+		if !globOK(g.program, prog) {
+			continue
+		}
+		listed = true
+		if argsMatch(g.args, args) {
+			return true, ""
+		}
+	}
+	if !listed && len(args) == 0 {
+		return true, ""
+	}
+	if !listed {
+		return false, fmt.Sprintf("denied: %s runs with no arguments for %q; this grant names none\n"+
+			"  grant an argument form: add 'argv %s <pattern>' to the policy", prog, p.Client, prog)
+	}
+	return false, fmt.Sprintf("denied: no argument form granted to %q lets %s run with these arguments\n"+
+		"  grant the form: add 'argv %s <pattern>' to the policy", p.Client, prog, prog)
+}
+
+func argsMatch(patterns, args []string) bool {
+	if len(patterns) != len(args) {
+		return false
+	}
+	for i := range patterns {
+		if !argMatch(patterns[i], args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// argMatch matches one argument against one pattern. An exact pattern is an exact argument. A
+// glob ('*' and the rest of path.Match) stays inside one argument and never crosses a '/', and
+// an argument with a '..' component is never matched by a glob, so a wildcard in a path cannot
+// climb out of the directory it names.
+func argMatch(pattern, arg string) bool {
+	if pattern == arg {
+		return true
+	}
+	for _, part := range strings.Split(arg, "/") {
+		if part == ".." {
+			return false
+		}
+	}
+	return globOK(pattern, arg)
 }
 
 func (p *Policy) takeToken(now time.Time) bool {

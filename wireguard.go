@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	qrcode "github.com/skip2/go-qrcode"
 )
@@ -216,10 +217,25 @@ func renderQR(text string) (string, error) {
 
 // ------------------------------------------------------------------ the tool
 
+// uciQuotable refuses a value that cannot sit between single quotes in a uci batch line. A quote,
+// a backslash or a control character would end the value early and let the rest of the line be
+// read as another command, so it is refused before anything is written.
+func uciQuotable(field, v string) error {
+	if strings.ContainsAny(v, "'\"\\") || strings.IndexFunc(v, unicode.IsControl) >= 0 {
+		return fmt.Errorf("%s cannot be written to uci: it must not hold quotes, backslashes or control characters", field)
+	}
+	return nil
+}
+
 func (s *Server) wgNewClient(ctx context.Context, in wgNewClientIn) (string, string, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return "", "", fmt.Errorf("name is required")
+	}
+	for _, f := range []struct{ field, value string }{{"name", name}, {"dns", in.DNS}, {"allowed_ips", in.AllowedIPs}} {
+		if err := uciQuotable(f.field, f.value); err != nil {
+			return "", "", err
+		}
 	}
 
 	show, err := run(ctx, defaultCmdTimeout, "uci", "show", "wireguard_server")
@@ -291,26 +307,32 @@ func (s *Server) wgNewClient(ctx context.Context, in wgNewClientIn) (string, str
 
 	id := nextPeerID(t)
 	sec := fmt.Sprintf("peer_%d", id)
-	set := [][]string{
-		{"set", "wireguard_server." + sec + "=peers"},
-		{"set", "wireguard_server." + sec + ".name=" + name},
-		{"set", "wireguard_server." + sec + ".peer_id=" + strconv.Itoa(id)},
-		{"set", "wireguard_server." + sec + ".presharedkey_enable=0"},
-		{"set", "wireguard_server." + sec + ".dns=" + cfg.DNS},
-		{"set", "wireguard_server." + sec + ".allowed_ips=" + cfg.AllowedIPs},
-		{"set", "wireguard_server." + sec + ".mtu=" + strconv.Itoa(cfg.MTU)},
-		{"set", "wireguard_server." + sec + ".persistent_keepalive=" + strconv.Itoa(cfg.Keepalive)},
-		{"set", "wireguard_server." + sec + ".public_key=" + pub},
-		{"set", "wireguard_server." + sec + ".private_key=" + priv},
-		{"set", "wireguard_server." + sec + ".client_ip=" + cfg.Address},
-		{"set", "wireguard_server." + sec + ".deprecated=0"},
-		{"set", "wireguard_server." + sec + ".enabled=1"},
+	// The peer goes to uci as one batch on standard input. The private key is one of its values,
+	// and an argument list is readable by every process on the router for as long as the command
+	// runs, so the key must never be an argument.
+	fields := [][2]string{
+		{"name", name},
+		{"peer_id", strconv.Itoa(id)},
+		{"presharedkey_enable", "0"},
+		{"dns", cfg.DNS},
+		{"allowed_ips", cfg.AllowedIPs},
+		{"mtu", strconv.Itoa(cfg.MTU)},
+		{"persistent_keepalive", strconv.Itoa(cfg.Keepalive)},
+		{"public_key", pub},
+		{"private_key", priv},
+		{"client_ip", cfg.Address},
+		{"deprecated", "0"},
+		{"enabled", "1"},
 	}
-	for _, args := range set {
-		if out, err := run(ctx, defaultCmdTimeout, append([]string{"uci"}, args...)...); err != nil {
-			run(ctx, defaultCmdTimeout, "uci", "revert", "wireguard_server")
-			return out, "", fmt.Errorf("staging peer: %w", err)
-		}
+	var batch strings.Builder
+	fmt.Fprintf(&batch, "set wireguard_server.%s=peers\n", sec)
+	for _, f := range fields {
+		fmt.Fprintf(&batch, "set wireguard_server.%s.%s='%s'\n", sec, f[0], f[1])
+	}
+	if out, err := runStdin(ctx, defaultCmdTimeout, batch.String(), "uci", "batch"); err != nil {
+		run(ctx, defaultCmdTimeout, "uci", "revert", "wireguard_server")
+		// The batch holds the private key, and uci's output must not hand it back.
+		return redactUCIOutput(out), "", fmt.Errorf("staging peer: %w", err)
 	}
 	if out, err := run(ctx, defaultCmdTimeout, "uci", "commit", "wireguard_server"); err != nil {
 		return out, "", fmt.Errorf("committing peer: %w", err)

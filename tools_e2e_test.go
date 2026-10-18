@@ -21,6 +21,8 @@ config policy
 	list tools 'exec'
 	list tools 'logread'
 	list scopes '*'
+	list argv 'echo * *'
+	list argv 'sh -c *'
 `
 
 func TestUbusListIsUngatedAndPassesTheFilter(t *testing.T) {
