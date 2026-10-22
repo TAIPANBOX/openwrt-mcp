@@ -362,6 +362,18 @@ func TestRewiringIsHeld(t *testing.T) {
 		{"an interface moved onto a guest bridge made earlier", cfg{network: guest},
 			cfg{network: replaceLine(guest, "network.lan.device='br-lan'", "network.lan.device='br-iot'")},
 			"REWIRES THE NETWORK: interface 'lan' sits on 'br-lan' -> 'br-iot'"},
+		{"an interface on a new port-less device named as a port", cfg{},
+			cfg{network: apNetwork + "network.dw=device\nnetwork.dw.name='wan'\nnetwork.dw.macaddr='02:00:00:00:00:01'\n" +
+				"network.x=interface\nnetwork.x.device='wan'\nnetwork.x.proto='static'\n"},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> 'wan'"},
+		{"an interface on a new bridge named as a VLAN", cfg{},
+			cfg{network: apNetwork + "network.bv=device\nnetwork.bv.type='bridge'\nnetwork.bv.name='br-lan.5'\n" +
+				"network.x=interface\nnetwork.x.device='br-lan.5'\nnetwork.x.proto='static'\n"},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> 'br-lan.5'"},
+		{"an interface on a new device that is not a bridge", cfg{},
+			cfg{network: apNetwork + "network.bv=device\nnetwork.bv.type='veth'\nnetwork.bv.name='br-v'\n" +
+				"network.x=interface\nnetwork.x.device='br-v'\nnetwork.x.proto='static'\n"},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> 'br-v'"},
 		{"a device removed", cfg{},
 			cfg{network: replaceLine(replaceLine(replaceLine(replaceLine(apNetwork, "network.cfg030f15=device\n", ""),
 				"network.cfg030f15.name='br-lan'\n", ""), "network.cfg030f15.type='bridge'\n", ""), "network.cfg030f15.ports='lan1' 'lan2' 'lan3'\n", "")},
