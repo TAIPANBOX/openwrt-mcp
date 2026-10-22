@@ -359,3 +359,103 @@ func TestInternetPortMovedInTwoStepsHeld(t *testing.T) {
 		}
 	}
 }
+
+// The internet port as the router carries it in other shapes: a VLAN of a bridge (DSA) or of a
+// switch (swconfig), an alias, a VLAN or a macvlan on top of it, and a firewall zone that takes it
+// by device or by subnet rather than by network. Each must still be held when it moves or joins.
+func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
+	dsa := replaceLine(replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='br-lan.2'"),
+		"network.wan6.device='wan'", "network.wan6.device='br-lan.2'"), "network.lan.device='br-lan'", "network.lan.device='br-lan.1'") +
+		"network.v1=bridge-vlan\nnetwork.v1.device='br-lan'\nnetwork.v1.vlan='1'\nnetwork.v1.ports='lan1:u*' 'lan2:u*'\n" +
+		"network.v2=bridge-vlan\nnetwork.v2.device='br-lan'\nnetwork.v2.vlan='2'\nnetwork.v2.ports='lan3:u*'\n"
+	sw := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='eth0.2'"),
+		"network.wan6.device='wan'", "network.wan6.device='eth0.2'") +
+		"network.sw=switch\nnetwork.sw.name='switch0'\nnetwork.sw.enable_vlan='1'\n" +
+		"network.sv1=switch_vlan\nnetwork.sv1.device='switch0'\nnetwork.sv1.vlan='1'\nnetwork.sv1.ports='1 2 3 6t'\n" +
+		"network.sv2=switch_vlan\nnetwork.sv2.device='switch0'\nnetwork.sv2.vlan='2'\nnetwork.sv2.ports='0 6t'\n"
+	macvlan := apNetwork + "network.mv=device\nnetwork.mv.type='macvlan'\nnetwork.mv.ifname='wan'\nnetwork.mv.name='wanmac'\n"
+	fw := apFirewall
+	wildcard := replaceLine(fw, "firewall.guest.network='guest'", "firewall.guest.network='guest'\nfirewall.guest.device='wa+'")
+	type cfg struct{ network, firewall string }
+	run := func(b, a cfg) string {
+		t.Helper()
+		shows := func(c cfg) map[string]string {
+			s := baseShows()
+			if c.network != "" {
+				s = with(s, "network", c.network)
+			}
+			if c.firewall != "" {
+				s = with(s, "firewall", c.firewall)
+			}
+			return s
+		}
+		return strings.Join(predicates(mustStates(t, shows(b)), mustStates(t, shows(a))), "\n")
+	}
+	for _, c := range []struct {
+		name          string
+		before, after cfg
+		want          string
+	}{
+		{"the internet VLAN's port moved to the LAN VLAN", cfg{network: dsa},
+			cfg{network: replaceLine(replaceLine(dsa, "network.v1.ports='lan1:u*' 'lan2:u*'", "network.v1.ports='lan1:u*' 'lan2:u*' 'lan3:u*'"),
+				"network.v2.ports='lan3:u*'\n", "")},
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"the internet VLAN's port added tagged to the LAN VLAN", cfg{network: dsa},
+			cfg{network: replaceLine(dsa, "network.v1.ports='lan1:u*' 'lan2:u*'", "network.v1.ports='lan1:u*' 'lan2:u*' 'lan3:t'")},
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"the internet VLAN's port made an interface of its own", cfg{network: dsa},
+			cfg{network: dsa + "network.x=interface\nnetwork.x.device='lan3'\nnetwork.x.proto='static'\n"},
+			"joins interface 'x'"},
+		{"the internet switch port moved to the LAN VLAN", cfg{network: sw},
+			cfg{network: replaceLine(replaceLine(sw, "network.sv1.ports='1 2 3 6t'", "network.sv1.ports='0 1 2 3 6t'"),
+				"network.sv2.ports='0 6t'", "network.sv2.ports='6t'")},
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"the internet switch port added tagged to the LAN VLAN", cfg{network: sw},
+			cfg{network: replaceLine(sw, "network.sv1.ports='1 2 3 6t'", "network.sv1.ports='0t 1 2 3 6t'")},
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"an interface on an alias of wan", cfg{},
+			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='@wan'\nnetwork.x.proto='static'\n"},
+			"joins interface 'x'"},
+		{"an interface on a VLAN of the internet port", cfg{},
+			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='wan.10'\nnetwork.x.proto='static'\n"},
+			"joins interface 'x'"},
+		{"a macvlan on the internet port", cfg{},
+			cfg{network: macvlan},
+			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'wanmac'"},
+		{"an interface on a macvlan of the internet port that was already there", cfg{network: macvlan},
+			cfg{network: macvlan + "network.x=interface\nnetwork.x.device='wanmac'\nnetwork.x.proto='static'\n"},
+			"joins interface 'x'"},
+		{"the LAN zone takes the internet port by device", cfg{},
+			cfg{firewall: replaceLine(fw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan'\nfirewall.cfg02dc81.device='wan'")},
+			"WEAKENS THE FIREWALL: zone 'lan' matches by device or subnet"},
+		{"the LAN zone takes every address by subnet", cfg{},
+			cfg{firewall: replaceLine(fw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan'\nfirewall.cfg02dc81.subnet='0.0.0.0/0'")},
+			"WEAKENS THE FIREWALL: zone 'lan' matches by device or subnet"},
+		{"a zone that takes the internet port by a device pattern faces the internet", cfg{firewall: wildcard},
+			cfg{firewall: replaceLine(wildcard, "firewall.guest.input='REJECT'", "firewall.guest.input='ACCEPT'")},
+			"WEAKENS THE FIREWALL: zone 'guest' accepts what comes in from the internet"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := run(c.before, c.after); !strings.Contains(got, c.want) {
+				t.Errorf("headlines %q, want %q", got, c.want)
+			}
+		})
+	}
+	// What leaves the internet port where it is still runs: an interface on the LAN's own VLAN, a
+	// VLAN of a LAN port, a zone's input on a zone that does not face the internet.
+	for _, c := range []struct {
+		name          string
+		before, after cfg
+	}{
+		{"an interface on the LAN VLAN", cfg{network: dsa},
+			cfg{network: dsa + "network.iot=interface\nnetwork.iot.device='br-lan.1'\nnetwork.iot.proto='static'\n"}},
+		{"an interface on a VLAN of a LAN port", cfg{},
+			cfg{network: apNetwork + "network.iot=interface\nnetwork.iot.device='lan2.5'\nnetwork.iot.proto='static'\n"}},
+		{"a switch port moved between LAN VLANs", cfg{network: sw + "network.sv3=switch_vlan\nnetwork.sv3.device='switch0'\nnetwork.sv3.vlan='3'\nnetwork.sv3.ports='6t'\n"},
+			cfg{network: sw + "network.sv3=switch_vlan\nnetwork.sv3.device='switch0'\nnetwork.sv3.vlan='3'\nnetwork.sv3.ports='3 6t'\n"}},
+	} {
+		if got := run(c.before, c.after); got != "" {
+			t.Errorf("%s: held as %q", c.name, got)
+		}
+	}
+}

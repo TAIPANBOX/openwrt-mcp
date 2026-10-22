@@ -47,10 +47,12 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
 
   # bound to: TestSplitRedirectHeldOnSecondCall, TestWanPortIntoLanBridgeHeld, TestZoneRenameHeld
   # bound to: TestPredicatesReadTheState, TestKeywordsAreReadTheWayTheyCouldBeApplied, TestInternetPortMovedInTwoStepsHeld
+  # bound to: TestInternetPortSeenThroughVLANsAliasesAndZones
   Scenario: what decides is the state a change leaves, not the call
     When a port forward from the internet is made disabled in one call and switched on in the next
     Or the internet port is added to the LAN bridge
     Or the internet port is moved in one call, so that the next can put the old port into the LAN bridge
+    Or the internet port moves or joins through a bridge or switch VLAN, an alias, a VLAN or macvlan on top of it, or a zone that takes it by device or subnet
     Or the LAN zone is renamed so that it becomes an internet zone
     Then the call that completes it is held
     And a keyword is read trimmed and in any case, and a value nobody knows reads as the one that opens
