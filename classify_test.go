@@ -468,3 +468,62 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 		}
 	}
 }
+
+// The internet as interfaces rather than ports: a VLAN of a plain port, the device a protocol makes
+// for wan (pppoe-wan), an interface the internet zone lists, and an alias of an alias.
+func TestInternetInterfacesAreFollowed(t *testing.T) {
+	fw := apFirewall
+	plain := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='lan4.2'"),
+		"network.wan6.device='wan'", "network.wan6.device='lan4.2'")
+	wwanFw := replaceLine(fw, "firewall.cfg03dc81.network='wan' 'wan6'", "firewall.cfg03dc81.network='wan' 'wan6' 'wwan'")
+	wwanNet := apNetwork + "network.wwan=interface\nnetwork.wwan.proto='dhcp'\n"
+	onAlias := apNetwork + "network.y=interface\nnetwork.y.device='@wan'\nnetwork.y.proto='static'\n"
+	inZone := replaceLine(fw, "firewall.cfg03dc81.network='wan' 'wan6'", "firewall.cfg03dc81.network='wan' 'wan6' 'y'")
+	type cfg struct{ network, firewall string }
+	run := func(b, a cfg) string {
+		t.Helper()
+		shows := func(c cfg) map[string]string {
+			s := baseShows()
+			if c.network != "" {
+				s = with(s, "network", c.network)
+			}
+			if c.firewall != "" {
+				s = with(s, "firewall", c.firewall)
+			}
+			return s
+		}
+		return strings.Join(predicates(mustStates(t, shows(b)), mustStates(t, shows(a))), "\n")
+	}
+	for _, c := range []struct {
+		name          string
+		before, after cfg
+		want          string
+	}{
+		{"a VLAN of a plain port named as the internet port, its port into the LAN bridge", cfg{network: plain},
+			cfg{network: replaceLine(plain, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'lan4'")},
+			"WEAKENS THE FIREWALL: the internet port 'lan4' joins 'br-lan'"},
+		{"an interface on the device PPPoE makes for wan", cfg{},
+			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='pppoe-wan'\nnetwork.x.proto='static'\n"},
+			"joins interface 'x'"},
+		{"an interface on an alias of an interface the internet zone lists", cfg{network: wwanNet, firewall: wwanFw},
+			cfg{network: wwanNet + "network.x=interface\nnetwork.x.device='@wwan'\nnetwork.x.proto='static'\n", firewall: wwanFw},
+			"joins interface 'x'"},
+		{"an alias of an alias of wan", cfg{network: onAlias},
+			cfg{network: onAlias + "network.x=interface\nnetwork.x.device='@y'\nnetwork.x.proto='static'\n"},
+			"joins interface 'x'"},
+		{"an interface on the internet port taken out of the internet zone", cfg{network: onAlias, firewall: inZone},
+			cfg{network: onAlias},
+			"joins interface 'y'"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := run(c.before, c.after); !strings.Contains(got, c.want) {
+				t.Errorf("headlines %q, want %q", got, c.want)
+			}
+		})
+	}
+	// An interface on the internet port that the internet zone lists is the internet side, not a
+	// join: a second uplink address, a modem's management address.
+	if got := run(cfg{}, cfg{network: onAlias, firewall: inZone}); got != "" {
+		t.Errorf("an interface on the internet port inside the internet zone: held as %q", got)
+	}
+}
