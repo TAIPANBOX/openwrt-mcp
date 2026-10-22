@@ -584,6 +584,7 @@ func signature(s *uciSect, except ...string) string {
 // fwModel is what the firewall says about the internet.
 type fwModel struct {
 	wanZones map[string]bool   // zones that face the internet, by name
+	netWan   map[string]bool   // of them, those that do by a network or by masquerading
 	zoneNets map[string]string // network -> the first zone that lists it
 	zones    map[string]*uciSect
 	defIn    string
@@ -591,7 +592,7 @@ type fwModel struct {
 }
 
 func firewallOf(st states) fwModel {
-	m := fwModel{wanZones: map[string]bool{}, zoneNets: map[string]string{}, zones: map[string]*uciSect{},
+	m := fwModel{wanZones: map[string]bool{}, netWan: map[string]bool{}, zoneNets: map[string]string{}, zones: map[string]*uciSect{},
 		defIn: "DROP", defFwd: "DROP"}
 	fw := st.get("firewall")
 	for _, d := range fw.sectionsOf("defaults") {
@@ -616,11 +617,11 @@ func firewallOf(st states) fwModel {
 				m.zoneNets[n] = name
 			}
 			if n == "wan" || n == "wan6" {
-				m.wanZones[name] = true
+				m.wanZones[name], m.netWan[name] = true, true
 			}
 		}
 		if uciTrue(z.get("masq")) {
-			m.wanZones[name] = true
+			m.wanZones[name], m.netWan[name] = true, true
 		}
 		// fw4 also matches a zone by device and by subnet. Which devices a pattern or a subnet
 		// takes in is not read here, so such a zone counts as facing the internet.
@@ -629,6 +630,14 @@ func firewallOf(st states) fwModel {
 		}
 	}
 	return m
+}
+
+func zoneNames(m fwModel) map[string]bool {
+	out := map[string]bool{}
+	for z := range m.zones {
+		out[z] = true
+	}
+	return out
 }
 
 func (m fwModel) policy(zone, which string) string {
@@ -770,6 +779,31 @@ func firewallWeakened(before, after states) []string {
 				showValue(z), was, now))
 		}
 	}
+	// A network on the internet side (wan, wan6, or one an internet-facing zone lists) put into a
+	// zone that does not face the internet brings the internet into that zone: an uplink such as a
+	// station-mode Wi-Fi joining the LAN zone.
+	side := map[string]bool{"wan": true, "wan6": true}
+	for n, z := range b.zoneNets {
+		if b.wanZones[z] {
+			side[n] = true
+		}
+	}
+	for _, z := range sortedKeys(zoneNames(a)) {
+		if a.wanZones[z] {
+			continue
+		}
+		had := map[string]bool{}
+		if bz := b.zones[z]; bz != nil {
+			for _, n := range bz.list("network") {
+				had[n] = true
+			}
+		}
+		for _, n := range a.zones[z].list("network") {
+			if side[n] && !had[n] {
+				out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: network %s joins zone %s", showValue(n), showValue(z)))
+			}
+		}
+	}
 	// fw4 writes a rule's or a redirect's `extra` and a zone's `extra_src` and `extra_dest` into the
 	// ruleset as they are, so what they do is nftables', not anything a rule here reads: any change
 	// to one, in any section, is held.
@@ -856,8 +890,9 @@ func rewiring(before, after states) []string {
 		now, inAfter := ad[n]
 		// A device section names the netdev it configures, so one named as an existing port (wan,
 		// lan3) or as a VLAN of one is that port. Only a new bridge with a name netifd makes for it
-		// alone, br-<name> with no dot or alias in it, is a new device with nothing in it.
-		if !inBefore && len(now) == 0 && bridges[n] && strings.HasPrefix(n, "br-") && !strings.ContainsAny(n, ".@") {
+		// alone, br-<name> with no dot or alias in it and no netdev of that name yet (netifd names an
+		// old-style bridged interface br-<interface>), is a new device with nothing in it.
+		if !inBefore && len(now) == 0 && bridges[n] && strings.HasPrefix(n, "br-") && !strings.ContainsAny(n, ".@") && !netdevExists(n) {
 			fresh[n] = true
 			continue
 		}
@@ -1074,7 +1109,7 @@ func openWifi(st states) map[string]string {
 		}
 		for _, n := range s.list("network") {
 			z, ok := m.zoneNets[n]
-			if !ok || m.wanZones[z] || !accepts(m.policy(z, "input")) {
+			if !ok || m.netWan[z] || !accepts(m.policy(z, "input")) {
 				continue
 			}
 			got[s.get("ssid")+"\x00"+s.get("device")+"\x00"+n+"\x00"+z] = fmt.Sprintf(

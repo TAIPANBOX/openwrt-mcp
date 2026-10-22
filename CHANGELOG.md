@@ -25,10 +25,11 @@ hash of its card.
   its last step before staging; an answered `action_list`, the approver's poll, writes no audit line.
 - How the router is wired is held whatever it wires to: any change to a `bridge-vlan`,
   `switch_vlan` or `switch_port` section, to a device's `ports` or `ifname` (one added or removed
-  included), or to what an interface sits on, except an interface put on a device made in the
-  same change with neither (a guest network). A zone that takes a `device` or a `subnet` faces
-  the internet, and any change to what it takes, or to a raw nftables fragment (`extra`,
-  `extra_src`, `extra_dest`), is held. Routes and routing rules are read trimmed.
+  included), or to what an interface sits on, except an interface put on a new port-less bridge
+  named `br-<name>` that the kernel does not have yet (a guest network). A zone that takes a
+  `device` or a `subnet` faces the internet, and any change to what it takes, or to a raw nftables
+  fragment (`extra`, `extra_src`, `extra_dest`), is held, and so is a network on the internet side
+  put into a zone that does not face it. Routes and routing rules are read trimmed.
 - Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
   approval facts (approver, factor, on, ready).
 
