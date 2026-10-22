@@ -291,3 +291,66 @@ func TestKeywordsAreReadTheWayTheyCouldBeApplied(t *testing.T) {
 		}
 	}
 }
+
+// The internet port is what network.wan and wan6 name in the state a call starts from, so moving it
+// is held itself: otherwise one call points wan at another port, which no other rule holds, and the
+// next puts the old port into the LAN bridge, which is then no longer the internet port. A bridge
+// named as the internet port counts by its ports, and its ports moving is held the same way.
+func TestInternetPortMovedInTwoStepsHeld(t *testing.T) {
+	bridged := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='br-wan'"),
+		"network.wan6.device='wan'", "network.wan6.device='br-wan'") +
+		"network.bw=device\nnetwork.bw.name='br-wan'\nnetwork.bw.type='bridge'\nnetwork.bw.ports='wan'\n"
+	spaced := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device=' wan'"),
+		"network.wan6.device='wan'", "network.wan6.device='wan '")
+	for _, c := range []struct {
+		name, before, after, want string
+	}{
+		{"wan pointed at another port", apNetwork,
+			replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='lan3'"),
+				"network.wan6.device='wan'", "network.wan6.device='lan3'"),
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"wan6 alone pointed elsewhere", apNetwork,
+			replaceLine(apNetwork, "network.wan6.device='wan'", "network.wan6.device='lan3'"),
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"wan removed", apNetwork,
+			replaceLine(apNetwork, "network.wan.device='wan'\n", ""),
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"the port behind a bridge named as the internet port, into the LAN bridge", bridged,
+			replaceLine(bridged, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'wan'"),
+			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'br-lan'"},
+		{"the port taken out of a bridge named as the internet port", bridged,
+			replaceLine(bridged, "network.bw.ports='wan'", "network.bw.ports='lan3'"),
+			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"an internet port written with a space, into the LAN bridge", spaced,
+			replaceLine(spaced, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'wan'"),
+			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'br-lan'"},
+		{"a default route written with spaces", apNetwork,
+			apNetwork + "network.r=route\nnetwork.r.interface='wg0'\nnetwork.r.target=' 0.0.0.0'\nnetwork.r.netmask='0.0.0.0 '\n",
+			"CHANGES VPN OR POLICY ROUTING: every destination through 'wg0'"},
+		{"a routing rule whose destination is a space", apNetwork,
+			apNetwork + "network.u=rule\nnetwork.u.lookup='100'\nnetwork.u.dest=' '\n",
+			"CHANGES VPN OR POLICY ROUTING: a routing rule for every destination"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := strings.Join(predicates(mustStates(t, with(baseShows(), "network", c.before)),
+				mustStates(t, with(baseShows(), "network", c.after))), "\n")
+			if !strings.Contains(got, c.want) {
+				t.Errorf("headlines %q, want %q", got, c.want)
+			}
+		})
+	}
+	// What the internet port does not change still runs: wan's protocol, a LAN port added to the
+	// LAN bridge, a bridge named as the internet port left as it is.
+	for _, c := range []struct{ name, before, after string }{
+		{"wan's protocol", apNetwork, replaceLine(apNetwork, "network.wan.proto='dhcp'", "network.wan.proto='pppoe'")},
+		{"a LAN port into the LAN bridge", apNetwork + "network.cfg040f15=device\nnetwork.cfg040f15.name='lan4'\n",
+			replaceLine(apNetwork, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'lan4'") +
+				"network.cfg040f15=device\nnetwork.cfg040f15.name='lan4'\n"},
+		{"the bridge's own type said again", bridged, replaceLine(bridged, "network.bw.type='bridge'", "network.bw.type='bridge'\nnetwork.bw.mtu='1500'")},
+	} {
+		if got := predicates(mustStates(t, with(baseShows(), "network", c.before)),
+			mustStates(t, with(baseShows(), "network", c.after))); len(got) != 0 {
+			t.Errorf("%s: held as %q", c.name, got)
+		}
+	}
+}
