@@ -203,3 +203,13 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
     When they differ in mfa_factor, mfa_window, mfa_max_failures or mfa_lockout
     Then the config does not load, and the error names the client and what differs
     But a policy that gates nothing may say anything
+
+  # @decided 2026-10-22 (the owner's, paraphrased): a code must still work while it is typed after
+  # the PIN, a minute after the app has moved on to the next one.
+  # bound to: TestACodeStillWorksForAMinuteAfterTheAppMovesOn, TestACodeOlderThanAMinutePastItsStepIsRefused
+  # bound to: TestACodeTwoStepsAheadIsRefused, TestMatchTOTPRejectsMalformedSecretsAndCodes
+  Scenario: a code from the app still works for a minute after the app shows the next one
+    Given a phone enrolled for a client
+    When the owner sends a code up to 59 seconds after the app stopped showing it
+    Then it unlocks, once
+    But a code a full minute past that, or one two steps ahead of the router's clock, is refused

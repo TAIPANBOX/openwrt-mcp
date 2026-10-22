@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.0-taipanbox.6 (binary version 0.5.0.6)
+
+**A code from the app keeps working for a minute after the app moves on.** `@decided 2026-10-22`
+(the owner's, paraphrased): approving a held change took too long to type in time, since the owner
+reads the code, switches to the chat and types the PIN before it. A code is now accepted up to two
+time-steps after its own (60 s past the moment it leaves the app's screen, up to 90 s after it
+first appears) and still one step before it; a code three steps old, or two steps ahead, is refused.
+Codes stay single-use. The same window applies to `mfa_unlock` and `action_approve`.
+
 ## v0.5.0-taipanbox.5 (binary version 0.5.0.5)
 
 **High-impact changes wait for the owner's approval, one change at a time.** For a client with an
