@@ -167,12 +167,22 @@ func TestMatchTOTPRejectsMalformedSecretsAndCodes(t *testing.T) {
 	if ctr, ok := matchTOTP(secret, code, t0); !ok || ctr != uint64(t0.Unix())/30 {
 		t.Errorf("a valid code: %d %v", ctr, ok)
 	}
-	// One step either side is accepted, two is not.
+	// Two steps back are accepted (a minute to type it after the app moves on), three are not;
+	// one step ahead is accepted, two are not.
 	if _, ok := matchTOTP(secret, code, t0.Add(30*time.Second)); !ok {
 		t.Error("the previous step was refused")
 	}
-	if _, ok := matchTOTP(secret, code, t0.Add(60*time.Second)); ok {
-		t.Error("a code two steps old was accepted")
+	if _, ok := matchTOTP(secret, code, t0.Add(60*time.Second)); !ok {
+		t.Error("a code two steps old was refused")
+	}
+	if _, ok := matchTOTP(secret, code, t0.Add(90*time.Second)); ok {
+		t.Error("a code three steps old was accepted")
+	}
+	if _, ok := matchTOTP(secret, code, t0.Add(-30*time.Second)); !ok {
+		t.Error("the next step was refused")
+	}
+	if _, ok := matchTOTP(secret, code, t0.Add(-60*time.Second)); ok {
+		t.Error("a code two steps ahead was accepted")
 	}
 }
 

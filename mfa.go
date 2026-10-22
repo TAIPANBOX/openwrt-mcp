@@ -36,10 +36,14 @@ import (
 // Aegis, 1Password and the rest implement, so enrolment is a QR scan and nothing bespoke.
 
 const (
-	totpStep    = 30 * time.Second
-	totpDigits  = 6
-	totpSkew    = 1 // accept the adjacent steps: routers drift, phones drift
-	mfaFileMode = 0o600
+	totpStep   = 30 * time.Second
+	totpDigits = 6
+	// A code is accepted up to two steps after its own and one before it: a step either way for
+	// clocks that drift, and a second step back because the owner reads the code, switches to the
+	// chat and types a PIN before it, so it keeps working for a minute after the app moves on.
+	totpSkewBack  = 2
+	totpSkewAhead = 1
+	mfaFileMode   = 0o600
 )
 
 const (
@@ -186,7 +190,7 @@ func (m *MFAStore) reloadSecretsLocked() {
 // `mfa activate` runs in its own process and spends a code to prove the scan worked. The
 // daemon only learns of the new secret by reloading the file, and its replay counter for that
 // client starts empty, so without help the very code typed at activation would open the
-// window once more for the rest of its 90 seconds. Activate therefore records the step it
+// window once more for the rest of its two minutes. Activate therefore records the step it
 // spent in mfa.used, keyed to a fingerprint of the secret, and a reload honours it. The
 // fingerprint keeps a step spent on one secret from blocking the next one.
 
@@ -623,7 +627,7 @@ func matchTOTP(secret, code string, now time.Time) (uint64, bool) {
 		return 0, false
 	}
 	step := uint64(now.Unix()) / uint64(totpStep.Seconds())
-	for skew := -totpSkew; skew <= totpSkew; skew++ {
+	for skew := -totpSkewBack; skew <= totpSkewAhead; skew++ {
 		ctr := step + uint64(skew)
 		want, err := totpAt(secret, ctr)
 		if err != nil {
@@ -649,7 +653,7 @@ func (m *MFAStore) checkTOTPLocked(client, code string, now time.Time) error {
 		return errInvalidCode
 	}
 	// Replay: a code is single-use. Without this, a code shoulder-surfed or captured
-	// from a log is good for its whole 90-second acceptance span.
+	// from a log is good for its whole two-minute acceptance span.
 	if last, seen := m.lastCtr[client]; seen && ctr <= last {
 		return errCodeReplayed
 	}

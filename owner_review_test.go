@@ -11,7 +11,7 @@ import (
 
 // The code typed to activate a secret is entered in another process (the CLI, or a web page
 // behind it). The daemon learns of the new secret only by reloading the file, so unless the
-// spent step travels with it, that code is good once more for the rest of its 90 seconds.
+// spent step travels with it, that code is good once more for the rest of its two minutes.
 func TestADaemonRefusesTheCodeThatActivatedASecret(t *testing.T) {
 	daemon, dir := enrolRig(t)
 	cli, err := LoadMFA(filepath.Join(dir, "mfa"))

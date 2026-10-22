@@ -95,7 +95,7 @@ func TestUnlockRejectsWrongCode(t *testing.T) {
 	}
 }
 
-// A code is single-use. Without this it stays valid for its whole ~90s acceptance span, so
+// A code is single-use. Without this it stays valid for its whole ~two-minute acceptance span, so
 // one shoulder-surf or one code left in a scrollback is reusable.
 func TestUnlockRefusesAReplayedCode(t *testing.T) {
 	m, _ := newMFA(t)
@@ -404,5 +404,51 @@ func TestEnrolLabelsTheDevice(t *testing.T) {
 	}
 	if !strings.Contains(uri3, "claude-code") {
 		t.Errorf("client name missing: %q", uri3)
+	}
+}
+
+// The owner reads a code in the app, switches to the chat and types a PIN before it, so a code
+// keeps working for a minute after the app has moved on to the next one. Step 56666667 is
+// [1700000010, 1700000040): its code leaves the screen at 1700000040.
+func codeOfStep(t *testing.T, m *MFAStore, client string, step uint64) string {
+	t.Helper()
+	m.mu.Lock()
+	secret := m.secrets[client]
+	m.mu.Unlock()
+	c, err := totpAt(secret, step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+const shownStep = uint64(56666667)
+
+func TestACodeStillWorksForAMinuteAfterTheAppMovesOn(t *testing.T) {
+	m, _ := newMFA(t)
+	m.Enrol("a", "openwrt-mcp", "testrouter")
+	code := codeOfStep(t, m, "a", shownStep)
+	// 59 s after it left the screen: two steps later.
+	if _, err := m.Unlock("a", code, time.Minute, time.Unix(1700000040+59, 0)); err != nil {
+		t.Fatalf("a code 59 s past its step was refused: %v", err)
+	}
+}
+
+func TestACodeOlderThanAMinutePastItsStepIsRefused(t *testing.T) {
+	m, _ := newMFA(t)
+	m.Enrol("a", "openwrt-mcp", "testrouter")
+	code := codeOfStep(t, m, "a", shownStep)
+	if _, err := m.Unlock("a", code, time.Minute, time.Unix(1700000040+60, 0)); err == nil {
+		t.Fatal("a code a full minute past its step still unlocked")
+	}
+}
+
+// Typing takes time only one way: a code from further ahead than the next step is still refused.
+func TestACodeTwoStepsAheadIsRefused(t *testing.T) {
+	m, _ := newMFA(t)
+	m.Enrol("a", "openwrt-mcp", "testrouter")
+	code := codeOfStep(t, m, "a", shownStep+2)
+	if _, err := m.Unlock("a", code, time.Minute, time.Unix(1700000010, 0)); err == nil {
+		t.Fatal("a code two steps ahead unlocked")
 	}
 }
