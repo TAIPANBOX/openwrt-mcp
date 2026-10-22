@@ -814,6 +814,7 @@ func rewiring(before, after states) []string {
 			out = append(out, "REWIRES THE NETWORK: network."+l)
 		}
 	}
+	bridges := map[string]bool{}
 	devices := func(st *uciState) map[string][]string {
 		got := map[string][]string{}
 		for _, d := range st.sectionsOf("device") {
@@ -824,6 +825,9 @@ func rewiring(before, after states) []string {
 			got[name] = append(append(got[name], d.list("ports")...), d.list("ifname")...)
 			if got[name] == nil {
 				got[name] = []string{}
+			}
+			if st == an && d.word("type") == "BRIDGE" {
+				bridges[name] = true
 			}
 		}
 		return got
@@ -840,7 +844,10 @@ func rewiring(before, after states) []string {
 	for _, n := range sortedKeys(names) {
 		was, inBefore := bd[n]
 		now, inAfter := ad[n]
-		if !inBefore && len(now) == 0 {
+		// A device section names the netdev it configures, so one named as an existing port (wan,
+		// lan3) or as a VLAN of one is that port. Only a new bridge with a name netifd makes for it
+		// alone, br-<name> with no dot or alias in it, is a new device with nothing in it.
+		if !inBefore && len(now) == 0 && bridges[n] && strings.HasPrefix(n, "br-") && !strings.ContainsAny(n, ".@") {
 			fresh[n] = true
 			continue
 		}
