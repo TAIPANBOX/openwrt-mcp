@@ -376,6 +376,7 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 	macvlan := apNetwork + "network.mv=device\nnetwork.mv.type='macvlan'\nnetwork.mv.ifname='wan'\nnetwork.mv.name='wanmac'\n"
 	fw := apFirewall
 	wildcard := replaceLine(fw, "firewall.guest.network='guest'", "firewall.guest.network='guest'\nfirewall.guest.device='wa+'")
+	negated := replaceLine(fw, "firewall.guest.network='guest'", "firewall.guest.network='guest'\nfirewall.guest.device='!lan1'")
 	type cfg struct{ network, firewall string }
 	run := func(b, a cfg) string {
 		t.Helper()
@@ -413,6 +414,9 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 		{"the internet switch port added tagged to the LAN VLAN", cfg{network: sw},
 			cfg{network: replaceLine(sw, "network.sv1.ports='1 2 3 6t'", "network.sv1.ports='0t 1 2 3 6t'")},
 			"WEAKENS THE FIREWALL: the internet port changes"},
+		{"a LAN switch port added tagged to the internet VLAN", cfg{network: sw},
+			cfg{network: replaceLine(sw, "network.sv2.ports='0 6t'", "network.sv2.ports='0 5t 6t'")},
+			"WEAKENS THE FIREWALL: the internet port changes"},
 		{"an interface on an alias of wan", cfg{},
 			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='@wan'\nnetwork.x.proto='static'\n"},
 			"joins interface 'x'"},
@@ -434,6 +438,9 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 		{"a zone that takes the internet port by a device pattern faces the internet", cfg{firewall: wildcard},
 			cfg{firewall: replaceLine(wildcard, "firewall.guest.input='REJECT'", "firewall.guest.input='ACCEPT'")},
 			"WEAKENS THE FIREWALL: zone 'guest' accepts what comes in from the internet"},
+		{"a zone that takes every device but one faces the internet", cfg{firewall: negated},
+			cfg{firewall: replaceLine(negated, "firewall.guest.input='REJECT'", "firewall.guest.input='ACCEPT'")},
+			"WEAKENS THE FIREWALL: zone 'guest' accepts what comes in from the internet"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := run(c.before, c.after); !strings.Contains(got, c.want) {
@@ -449,6 +456,8 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 	}{
 		{"an interface on the LAN VLAN", cfg{network: dsa},
 			cfg{network: dsa + "network.iot=interface\nnetwork.iot.device='br-lan.1'\nnetwork.iot.proto='static'\n"}},
+		{"a LAN port added to a new VLAN of the bridge", cfg{network: dsa},
+			cfg{network: dsa + "network.v3=bridge-vlan\nnetwork.v3.device='br-lan'\nnetwork.v3.vlan='3'\nnetwork.v3.ports='lan2:t'\n"}},
 		{"an interface on a VLAN of a LAN port", cfg{},
 			cfg{network: apNetwork + "network.iot=interface\nnetwork.iot.device='lan2.5'\nnetwork.iot.proto='static'\n"}},
 		{"a switch port moved between LAN VLANs", cfg{network: sw + "network.sv3=switch_vlan\nnetwork.sv3.device='switch0'\nnetwork.sv3.vlan='3'\nnetwork.sv3.ports='6t'\n"},
