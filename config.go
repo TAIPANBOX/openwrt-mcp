@@ -218,6 +218,13 @@ func LoadConfig(configPath string) (*Config, error) {
 		if p.Hold && c.Approvals[p.Client] == nil {
 			return nil, fmt.Errorf("a policy for %q holds what it grants for approval, but %q has no approval section", p.Client, p.Client)
 		}
+		if p.Hold {
+			for _, t := range p.Tools {
+				if !heldTools[t] {
+					return nil, fmt.Errorf("a policy for %q holds %s for approval, which an approval cannot run; a hold policy grants uci_apply or ubus_call", p.Client, t)
+				}
+			}
+		}
 	}
 	return c, nil
 }

@@ -20,6 +20,9 @@ hash of its card.
 - A classifier that reads the state a `uci_apply` would leave (the router's own uci on a RAM copy
   of the configs), and `rc.init` and `system.reboot` over ubus.
 - `MFAStore.Verify`: the factors checked, a failure counted and the TOTP step spent, with no window.
+- Keywords are decided on trimmed and in any case, and a value the classifier does not know counts
+  as the one that opens; `masq` is read as a boolean; an approved apply checks the configs again as
+  its last step before staging; an answered `action_list`, the approver's poll, writes no audit line.
 - Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
   approval facts (approver, factor, on, ready).
 

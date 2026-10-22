@@ -927,6 +927,10 @@ func TestApproveRefusedAfterDrift(t *testing.T) {
 	if !isErr || !strings.Contains(out, "changed since") {
 		t.Errorf("approved over a changed config: %q (error=%v)", out, isErr)
 	}
+	// Refused before the factors are asked: the change still waits, for the owner to reject.
+	if st := r.action(id).Status; st != "held" {
+		t.Errorf("after a refusal for drift the change is %q, not still held", st)
+	}
 	if st := r.staged(); len(st) != 0 {
 		t.Errorf("staged %q", st)
 	}
@@ -1268,5 +1272,70 @@ func TestApprovalRulesAddHoldsAndRefusals(t *testing.T) {
 	}
 	if calls := r.ubusCalls(); len(calls) != 0 {
 		t.Errorf("ubus was called: %q", calls)
+	}
+}
+
+// A hold policy holds only what can be run once approved: a tool held that no approval can run
+// would cost the owner a PIN and a code for nothing.
+func TestHoldIsOnlyForWhatAnApprovalCanRun(t *testing.T) {
+	for name, body := range map[string]string{
+		"a hold policy granting apk_add": apApproval + "\nconfig policy\n\toption client 'a'\n\tlist tools 'apk_add'\n" +
+			"\tlist scopes '*'\n\toption hold '1'\n\toption approval 'appr'\n",
+		"a hold rule for apk_add": apApproval + "\tlist hold 'apk_add:*'\n",
+	} {
+		f := filepath.Join(t.TempDir(), "config")
+		os.WriteFile(f, []byte(body), 0o600)
+		if _, err := LoadConfig(f); err == nil {
+			t.Errorf("%s: the configuration loaded", name)
+		}
+	}
+	// A refuse rule for apk_add is fine: refusing needs nothing to run.
+	f := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(f, []byte(apApproval+"\tlist refuse 'apk_add:*'\n"), 0o600)
+	if _, err := LoadConfig(f); err != nil {
+		t.Errorf("a refuse rule for apk_add did not load: %v", err)
+	}
+}
+
+// The approver's client asks for the held changes every few seconds: an answered listing writes no
+// audit line, and a refused one does.
+func TestApproverListingIsNotAudited(t *testing.T) {
+	r := newApRig(t, "")
+	r.holdPortForward()
+	before := len(auditEvents(t, r.state))
+	for i := 0; i < 3; i++ {
+		r.list()
+	}
+	if got := len(auditEvents(t, r.state)); got != before {
+		t.Errorf("%d audit lines for three listings", got-before)
+	}
+	callTool(t, r.s, "stranger", "action_list", map[string]any{})
+	events := auditEvents(t, r.state)
+	if last := events[len(events)-1]; last.Tool != "action_list" || last.Outcome != OutcomeDenied {
+		t.Errorf("a refused listing was not audited: %+v", last)
+	}
+}
+
+// An edit that lands after the approval's checks and before the apply is caught by the apply
+// itself: an approved change is staged only on the configs it was checked against.
+func TestApprovedApplyRechecksTheConfigs(t *testing.T) {
+	r := newApRig(t, "")
+	r.holdPortForward()
+	// The edit is made by uci's own `changes` call during the apply, the last step before staging.
+	fakeCmd(t, "uci", `if [ "$1" = changes ]; then echo changed > "`+filepath.Join(r.cfgDir, "firewall")+`"; exit 0; fi
+dir=""
+while [ $# -gt 0 ]; do case "$1" in -c) dir=$2; shift 2 ;; -P) shift 2 ;; -X) shift ;; *) break ;; esac; done
+[ "$1" = show ] && { cat "`+filepath.Join(r.fix, "now")+`/$2"; exit 0; }
+echo "$*" >> "`+r.log+`"`)
+	var id string
+	for _, a := range r.list() {
+		id = a.ID
+	}
+	out, isErr := r.approve("owner", id, r.action(id).Hash, apPIN, r.code(time.Now()))
+	if !isErr || !strings.Contains(out, "changed since") {
+		t.Errorf("an approved change was applied over a config edited during the approval: %q (error=%v)", out, isErr)
+	}
+	if st := r.staged(); len(st) != 0 {
+		t.Errorf("staged %q", st)
 	}
 }

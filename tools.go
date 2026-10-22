@@ -691,7 +691,12 @@ func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string
 			finish := func(res *mcp.CallToolResult, outcome Outcome, summary, errMsg string) (*mcp.CallToolResult, any, error) {
 				ev.Outcome, ev.Summary, ev.Error = outcome, summary, errMsg
 				ev.Duration = time.Since(started).Milliseconds()
-				s.audit.Record(ev)
+				// The approver's client asks for the held changes every few seconds; a line on
+				// flash for each answered listing would wear the flash and drown the log. What it
+				// lists is held in memory and changes nothing, and a refused listing is still kept.
+				if !(name == "action_list" && outcome == OutcomeOK) {
+					s.audit.Record(ev)
+				}
 				return res, nil, nil
 			}
 

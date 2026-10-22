@@ -67,8 +67,13 @@ func (r approvalRule) covers(tool string, scopes []string) bool {
 	return false
 }
 
-// approvalTools are the tools a hold or refuse rule may name: the ones that change something.
-var approvalTools = map[string]bool{"uci_apply": true, "ubus_call": true, "apk_add": true}
+// approvalTools are the tools a refuse rule may name: the ones that change something. heldTools are
+// the ones a hold rule or a hold policy may name: what runHeld can run once approved. apk_add is not
+// one yet, so holding it would cost the owner a PIN and a code for a change that can never run.
+var (
+	approvalTools = map[string]bool{"uci_apply": true, "ubus_call": true, "apk_add": true}
+	heldTools     = map[string]bool{"uci_apply": true, "ubus_call": true}
+)
 
 const (
 	defaultApprovalTTL   = 10 * time.Minute
@@ -150,8 +155,8 @@ func approvalFromSection(s uciSection) (*Approval, error) {
 	for _, kind := range []string{"hold", "refuse"} {
 		for _, e := range s.Lists[kind] {
 			tool, glob, ok := strings.Cut(strings.TrimSpace(e), ":")
-			if !ok || !approvalTools[tool] || glob == "" {
-				return nil, fmt.Errorf("bad '%s' %q: want <tool>:<scope glob>, the tool one of uci_apply, ubus_call or apk_add", kind, e)
+			if !ok || !approvalTools[tool] || glob == "" || (kind == "hold" && !heldTools[tool]) {
+				return nil, fmt.Errorf("bad '%s' %q: want <tool>:<scope glob>, the tool uci_apply or ubus_call (or apk_add, to refuse)", kind, e)
 			}
 			r := approvalRule{tool: tool, glob: glob}
 			if kind == "hold" {
@@ -666,7 +671,15 @@ func (s *Server) runHeld(ctx context.Context, h *heldAction) (string, string, er
 			return "", "", err
 		}
 		in.Timeout = approveRollback
-		return s.applyUCI(ctx, in, h.Client)
+		// Checked again as the last step before anything is staged: the approval's own checks and
+		// the slow PIN check ran with nothing held, and an edit in that time is not what was shown.
+		return s.applyUCI(ctx, in, h.Client, func() error {
+			if now := fingerprint(h.Configs); now != h.Fingerprint {
+				return &refusedError{"refused: the router's configuration changed since " + h.ID +
+					" was checked, while it was being approved; nothing was applied"}
+			}
+			return nil
+		})
 	case "ubus_call":
 		var in ubusCallIn
 		if err := json.Unmarshal(h.Input, &in); err != nil {

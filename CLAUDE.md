@@ -49,7 +49,7 @@ before the 2026-10-17 security wave, so the numbering starts here.
    apply pending, and spends the code's step without opening the window; what only a person may
    do is refused whatever the grants; the client never opens its own window.
    `@decided 2026-10-22`: the owner's design, paraphrased in approval.go's header.
-   (test: `features/approval.feature`, every scenario bound; mutants: `scripts/mutate-held.py`, 47,
+   (test: `features/approval.feature`, every scenario bound; mutants: `scripts/mutate-held.py`, 55,
    each caught by the test named beside it; real uci: `scripts/test-real-uci.sh`
    `TestRealUCIClassification`, in OpenWrt's rootfs in CI's apk job)
 

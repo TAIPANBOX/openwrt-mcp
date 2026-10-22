@@ -255,3 +255,39 @@ func TestHashCoversEveryField(t *testing.T) {
 		}
 	}
 }
+
+// Review of 2026-10-22: a keyword the classifier reads is read the way a firewall that trims and
+// ignores case would read it, and a value it does not know counts as the one that opens. So
+// whitespace or a spelling of a boolean cannot make an opening look closed.
+func TestKeywordsAreReadTheWayTheyCouldBeApplied(t *testing.T) {
+	fw := apFirewall
+	for _, c := range []struct{ name, after, want string }{
+		{"a DNAT target with spaces", portForwardAfter + "firewall.ssh_nas.target=' dnat '\n", "OPENS THE ROUTER TO THE INTERNET"},
+		{"a redirect target nobody knows", portForwardAfter + "firewall.ssh_nas.target='JUMP'\n", "OPENS THE ROUTER TO THE INTERNET"},
+		{"an internet zone's input with spaces", replaceLine(fw, "firewall.cfg03dc81.input='REJECT'", "firewall.cfg03dc81.input=' accept '"),
+			"WEAKENS THE FIREWALL: zone 'wan' accepts what comes in from the internet"},
+		{"an internet zone's input nobody knows", replaceLine(fw, "firewall.cfg03dc81.input='REJECT'", "firewall.cfg03dc81.input='MAYBE'"),
+			"WEAKENS THE FIREWALL: zone 'wan' accepts what comes in from the internet"},
+		{"a zone that masquerades, spelled on", replaceLine(fw, "firewall.guest.forward='REJECT'",
+			"firewall.guest.forward='REJECT'\nfirewall.guest.masq='on'"), "WEAKENS THE FIREWALL: the zones that face the internet change"},
+		{"a source zone with spaces", replaceLine(portForwardAfter, "firewall.ssh_nas.src='wan'", "firewall.ssh_nas.src=' wan '"),
+			"OPENS THE ROUTER TO THE INTERNET"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := strings.Join(predicates(mustStates(t, baseShows()), mustStates(t, with(baseShows(), "firewall", c.after))), "\n")
+			if !strings.Contains(got, c.want) {
+				t.Errorf("headlines %q, want %q", got, c.want)
+			}
+		})
+	}
+	// And what closes still closes however it is spelled: a SNAT redirect, outbound by definition,
+	// and a rule from the internet that drops.
+	for _, closed := range []string{
+		"firewall.s=redirect\nfirewall.s.src='lan'\nfirewall.s.dest='wan'\nfirewall.s.target=' snat '\n",
+		"firewall.d=rule\nfirewall.d.src='wan'\nfirewall.d.dest_port='23'\nfirewall.d.target=' drop '\n",
+	} {
+		if got := predicates(mustStates(t, baseShows()), mustStates(t, with(baseShows(), "firewall", fw+closed))); len(got) != 0 {
+			t.Errorf("held as %q:\n%s", got, closed)
+		}
+	}
+}

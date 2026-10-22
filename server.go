@@ -333,12 +333,13 @@ func uciArgv(c UCIChange) []string {
 }
 
 func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, error) {
-	return s.applyUCI(ctx, in, "")
+	return s.applyUCI(ctx, in, "", nil)
 }
 
 // applyUCI is uci_apply. approvedFor names the client whose held change this is, when the owner
-// approved it (approval.go), and is empty otherwise.
-func (s *Server) applyUCI(ctx context.Context, in uciApplyIn, approvedFor string) (string, string, error) {
+// approved it (approval.go), and is empty otherwise; guard, when given, is asked last before
+// anything is snapshotted or staged, and its error stops the apply.
+func (s *Server) applyUCI(ctx context.Context, in uciApplyIn, approvedFor string, guard func() error) (string, string, error) {
 	if len(in.Changes) == 0 {
 		return "", "", fmt.Errorf("changes must not be empty")
 	}
@@ -382,6 +383,11 @@ func (s *Server) applyUCI(ctx context.Context, in uciApplyIn, approvedFor string
 	// the whole batch before anything is snapshotted or staged.
 	if err := refuseCodeExec(ctx, in.Changes); err != nil {
 		return "", "refused: would run code as root", err
+	}
+	if guard != nil {
+		if err := guard(); err != nil {
+			return "", "refused: the router changed during the approval", err
+		}
 	}
 
 	token := randToken()

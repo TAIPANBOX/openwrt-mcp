@@ -776,18 +776,21 @@ config approval 'hermes_main_approval'
 ```
 
 A policy may say `option approval '<section>'`, which makes the configuration fail to load
-without that section, and `option hold '1'`, which holds everything it grants.
+without that section, and `option hold '1'`, which holds everything it grants; a hold policy, and a `list hold` rule, may
+name only `uci_apply` and `ubus_call`, the tools an approval can run.
 
 **What is held.** What decides a `uci_apply` is the state the batch would leave, not the batch:
 it is applied to a copy of the configs in RAM with the router's own `uci -c <copy> -P <copy>`,
 both states are read with `uci -X show`, and they are compared. So a port forward created
 disabled and switched on in a second call is held on the second call, although all it says is
 `enabled=1`. A zone faces the internet when its networks include `wan` or `wan6`, or it
-masquerades.
+masquerades. Keywords are read trimmed and in any case, and a value the rules do not know reads as
+the one that opens: a redirect target other than SNAT is a DNAT, a policy other than REJECT or DROP
+is an ACCEPT.
 
 | Held | Read as |
 |---|---|
-| A port opened to the internet | an enabled redirect (DNAT) or rule (any target but DROP or REJECT, unset included) from an internet zone or `*`, not there before |
+| A port opened to the internet | an enabled redirect (any target but SNAT) or rule (any target but DROP or REJECT, unset included) from an internet zone or `*`, not there before |
 | The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet, the internet port joining a bridge or another interface |
 | VPN or policy routing | any change to a WireGuard interface or peer, a route or rule for every destination added, changed or removed, anything in `pbr` |
 | Who answers DNS | dnsmasq's `server`, `address`, `noresolv`, `resolvfile`, `rebind_protection`; DHCP option 6; a host, domain or cname for a name with a dot; an interface's `dns` and `peerdns` |

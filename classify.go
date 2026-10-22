@@ -167,6 +167,7 @@ func classifyUbus(in ubusCallIn) classification {
 	case "rc.init":
 		name, nameOK := in.Args["name"].(string)
 		action, actionOK := in.Args["action"].(string)
+		name, action = strings.TrimSpace(name), strings.ToLower(strings.TrimSpace(action))
 		if !nameOK || !actionOK {
 			return classification{tier: tierHeld, headlines: []string{
 				"COULD NOT BE CHECKED: rc.init without a service name and an action as text"}}
@@ -211,13 +212,32 @@ func (s *uciSect) label() string {
 // get is an option's value, a list's elements joined by a space.
 func (s *uciSect) get(opt string) string { return strings.Join(s.Opts[opt], " ") }
 
+// word is an option's value as a keyword is decided on: trimmed and upper-cased, the way a reader
+// that is lenient about both would take it. A decision on a raw value would let ' dnat ' through as
+// something other than DNAT.
+func (s *uciSect) word(opt string) string { return strings.ToUpper(strings.TrimSpace(s.get(opt))) }
+
+// name is an option's value as a zone or interface name is decided on: trimmed.
+func (s *uciSect) name(opt string) string { return strings.TrimSpace(s.get(opt)) }
+
+// accepts reads a firewall policy the safe way round: anything but REJECT or DROP lets traffic in,
+// so a value nobody knows counts as ACCEPT.
+func accepts(policy string) bool { return policy != "REJECT" && policy != "DROP" }
+
 // list is a list's elements, or an option's words: netifd and fw4 read an option where they expect
-// a list as its whitespace-separated words, and uci_apply can only ever write an option.
+// a list as its whitespace-separated words, and uci_apply can only ever write an option. Each is
+// trimmed, so ' wan' is wan.
 func (s *uciSect) list(opt string) []string {
-	if s.Lists[opt] {
-		return s.Opts[opt]
+	if !s.Lists[opt] {
+		return strings.Fields(s.get(opt))
 	}
-	return strings.Fields(s.get(opt))
+	var out []string
+	for _, v := range s.Opts[opt] {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (st *uciState) sectionsOf(typ string) []*uciSect {
@@ -575,15 +595,15 @@ func firewallOf(st states) fwModel {
 		defIn: "DROP", defFwd: "DROP"}
 	fw := st.get("firewall")
 	for _, d := range fw.sectionsOf("defaults") {
-		if v := d.get("input"); v != "" {
-			m.defIn = strings.ToUpper(v)
+		if v := d.word("input"); v != "" {
+			m.defIn = v
 		}
-		if v := d.get("forward"); v != "" {
-			m.defFwd = strings.ToUpper(v)
+		if v := d.word("forward"); v != "" {
+			m.defFwd = v
 		}
 	}
 	for _, z := range fw.sectionsOf("zone") {
-		name := z.get("name")
+		name := z.name("name")
 		if name == "" {
 			continue
 		}
@@ -599,7 +619,7 @@ func firewallOf(st states) fwModel {
 				m.wanZones[name] = true
 			}
 		}
-		if z.get("masq") == "1" {
+		if uciTrue(z.get("masq")) {
 			m.wanZones[name] = true
 		}
 	}
@@ -615,21 +635,24 @@ func (m fwModel) policy(zone, which string) string {
 	if z == nil {
 		return def
 	}
-	if v := z.get(which); v != "" {
-		return strings.ToUpper(v)
+	if v := z.word(which); v != "" {
+		return v
 	}
 	return def
 }
 
-func (m fwModel) fromInternet(src string) bool { return src == "*" || m.wanZones[src] }
+func (m fwModel) fromInternet(src string) bool {
+	src = strings.TrimSpace(src)
+	return src == "*" || m.wanZones[src]
+}
 
 // openings are the redirects and rules that let the internet in, by signature, with their headline.
+// A redirect opens unless it is SNAT, outbound by definition: a target nobody knows counts as DNAT.
 func openings(st states) map[string]string {
 	out := map[string]string{}
 	m := firewallOf(st)
 	for _, s := range st.get("firewall").sectionsOf("redirect") {
-		target := strings.ToUpper(s.get("target"))
-		if !enabled(s) || (target != "" && target != "DNAT") || !m.fromInternet(s.get("src")) {
+		if !enabled(s) || s.word("target") == "SNAT" || !m.fromInternet(s.get("src")) {
 			continue
 		}
 		dport := s.get("dest_port")
@@ -647,8 +670,7 @@ func openings(st states) map[string]string {
 			showProto(s.get("proto")), showPortsOr(s.get("src_dport"), "every port"), showFrom(s.get("src_ip")), to)
 	}
 	for _, s := range st.get("firewall").sectionsOf("rule") {
-		target := strings.ToUpper(s.get("target"))
-		if !enabled(s) || target == "DROP" || target == "REJECT" || !m.fromInternet(s.get("src")) {
+		if !enabled(s) || !accepts(s.word("target")) || !m.fromInternet(s.get("src")) {
 			continue
 		}
 		to := "the router"
@@ -677,10 +699,10 @@ func firewallWeakened(before, after states) []string {
 	var out []string
 	b, a := firewallOf(before), firewallOf(after)
 	for _, z := range sortedKeys(a.wanZones) {
-		if a.policy(z, "input") == "ACCEPT" && (!b.wanZones[z] || b.policy(z, "input") != "ACCEPT") {
+		if accepts(a.policy(z, "input")) && (!b.wanZones[z] || !accepts(b.policy(z, "input"))) {
 			out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: zone %s accepts what comes in from the internet", showValue(z)))
 		}
-		if a.policy(z, "forward") == "ACCEPT" && (!b.wanZones[z] || b.policy(z, "forward") != "ACCEPT") {
+		if accepts(a.policy(z, "forward")) && (!b.wanZones[z] || !accepts(b.policy(z, "forward"))) {
 			out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: zone %s forwards whatever comes in from the internet", showValue(z)))
 		}
 	}
@@ -812,7 +834,7 @@ func defaultDestination(v string) bool {
 func vpnRouting(before, after states) []string {
 	var out []string
 	for _, l := range sectionChanges(before.get("network"), after.get("network"), func(s *uciSect) bool {
-		return strings.HasPrefix(s.Type, "wireguard_") || (s.Type == "interface" && s.get("proto") == "wireguard")
+		return strings.HasPrefix(s.Type, "wireguard_") || (s.Type == "interface" && s.word("proto") == "WIREGUARD")
 	}) {
 		out = append(out, "CHANGES VPN OR POLICY ROUTING: network."+l)
 	}
@@ -931,17 +953,17 @@ func openWifi(st states) map[string]string {
 		if uciTrue(s.get("disabled")) {
 			continue
 		}
-		if mode := s.get("mode"); mode != "" && mode != "ap" {
+		if mode := s.word("mode"); mode != "" && mode != "AP" {
 			continue
 		}
-		switch strings.ToLower(s.get("encryption")) {
-		case "", "none", "owe":
+		switch s.word("encryption") {
+		case "", "NONE", "OWE":
 		default:
 			continue
 		}
 		for _, n := range s.list("network") {
 			z, ok := m.zoneNets[n]
-			if !ok || m.wanZones[z] || m.policy(z, "input") != "ACCEPT" {
+			if !ok || m.wanZones[z] || !accepts(m.policy(z, "input")) {
 				continue
 			}
 			got[s.get("ssid")+"\x00"+s.get("device")+"\x00"+n+"\x00"+z] = fmt.Sprintf(

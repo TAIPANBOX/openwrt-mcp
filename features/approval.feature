@@ -46,12 +46,13 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     Then the change is applied as before, with the rollback armed
 
   # bound to: TestSplitRedirectHeldOnSecondCall, TestWanPortIntoLanBridgeHeld, TestZoneRenameHeld
-  # bound to: TestPredicatesReadTheState
+  # bound to: TestPredicatesReadTheState, TestKeywordsAreReadTheWayTheyCouldBeApplied
   Scenario: what decides is the state a change leaves, not the call
     When a port forward from the internet is made disabled in one call and switched on in the next
     Or the internet port is added to the LAN bridge
     Or the LAN zone is renamed so that it becomes an internet zone
     Then the call that completes it is held
+    And a keyword is read trimmed and in any case, and a value nobody knows reads as the one that opens
 
   # bound to: TestUnreadableTypeHeld, TestParseShowReadsWhatUciPrints
   Scenario: what cannot be checked waits for the owner
@@ -90,10 +91,11 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     When a code has been used to approve one change
     Then the same code does not approve another
 
-  # bound to: TestApproveRefusedAfterDrift, TestApproveRefusedWhileAnApplyAwaitsConfirmation
+  # bound to: TestApproveRefusedAfterDrift, TestApproveRefusedWhileAnApplyAwaitsConfirmation, TestApprovedApplyRechecksTheConfigs
   Scenario: when the router has changed since, the approval is refused and costs no try
     When a config the change was checked against has changed on disk, or another apply still waits for confirmation
     Then the approval is refused and nothing is applied
+    And an edit made while the approval is checked is caught by the apply, before anything is staged
 
   # bound to: TestRejectIsOneTapAndCostsNoTry, TestLockRejectsEveryHeld
   Scenario: rejecting needs no code
@@ -124,10 +126,16 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     When approvals are switched off, or the PIN or the app is missing, or the owner's client is not paired
     Then a high-impact change is refused, and says what is missing
 
-  # bound to: TestApprovalConfigIsChecked
+  # bound to: TestApprovalConfigIsChecked, TestHoldIsOnlyForWhatAnApprovalCanRun
   Scenario: an approval section that cannot work stops the configuration loading
     When a policy names an approval section that does not exist or belongs to another client, or a section's values are out of range
+    Or a hold policy or rule names a tool an approval cannot run
     Then the configuration does not load
+
+  # bound to: TestApproverListingIsNotAudited
+  Scenario: the approver's poll writes nothing to flash
+    When the owner's client lists the held changes every few seconds
+    Then an answered listing writes no audit line, and a refused one does
 
   # bound to: TestCLIStatusJSONSaysActionsHeldForApproval
   Scenario: a caller can ask for the guarantee by name
