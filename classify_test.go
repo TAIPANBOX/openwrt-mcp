@@ -183,7 +183,7 @@ func TestPredicatesReadTheState(t *testing.T) {
 			"firewall.f=forwarding\nfirewall.f.src='guest'\nfirewall.f.dest='lan'\n"), nil, ""},
 		{"a WAN port into a new interface", with(baseShows(), "network", apNetwork+
 			"network.x=interface\nnetwork.x.device='wan'\nnetwork.x.proto='static'\n"), nil,
-			"WEAKENS THE FIREWALL: the internet port 'wan' joins interface 'x'"},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> 'wan'"},
 		{"an anonymous WireGuard peer changed", with(baseShows(), "network", apNetwork+
 			"network.cfg0b1234=wireguard_wg0\nnetwork.cfg0b1234.public_key='abc'\nnetwork.cfg0b1234.allowed_ips='0.0.0.0/0'\n"), nil,
 			"CHANGES VPN OR POLICY ROUTING: network.@wireguard_wg0[0]"},
@@ -292,92 +292,24 @@ func TestKeywordsAreReadTheWayTheyCouldBeApplied(t *testing.T) {
 	}
 }
 
-// The internet port is what network.wan and wan6 name in the state a call starts from, so moving it
-// is held itself: otherwise one call points wan at another port, which no other rule holds, and the
-// next puts the old port into the LAN bridge, which is then no longer the internet port. A bridge
-// named as the internet port counts by its ports, and its ports moving is held the same way.
-func TestInternetPortMovedInTwoStepsHeld(t *testing.T) {
-	bridged := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='br-wan'"),
-		"network.wan6.device='wan'", "network.wan6.device='br-wan'") +
-		"network.bw=device\nnetwork.bw.name='br-wan'\nnetwork.bw.type='bridge'\nnetwork.bw.ports='wan'\n"
-	spaced := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device=' wan'"),
-		"network.wan6.device='wan'", "network.wan6.device='wan '")
-	for _, c := range []struct {
-		name, before, after, want string
-	}{
-		{"wan pointed at another port", apNetwork,
-			replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='lan3'"),
-				"network.wan6.device='wan'", "network.wan6.device='lan3'"),
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"wan6 alone pointed elsewhere", apNetwork,
-			replaceLine(apNetwork, "network.wan6.device='wan'", "network.wan6.device='lan3'"),
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"wan removed", apNetwork,
-			replaceLine(apNetwork, "network.wan.device='wan'\n", ""),
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"the port behind a bridge named as the internet port, into the LAN bridge", bridged,
-			replaceLine(bridged, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'wan'"),
-			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'br-lan'"},
-		{"the port taken out of a bridge named as the internet port", bridged,
-			replaceLine(bridged, "network.bw.ports='wan'", "network.bw.ports='lan3'"),
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"a bridge named as the internet port with a space in its name, its port taken out",
-			replaceLine(bridged, "network.bw.name='br-wan'", "network.bw.name=' br-wan'"),
-			replaceLine(replaceLine(bridged, "network.bw.name='br-wan'", "network.bw.name=' br-wan'"),
-				"network.bw.ports='wan'", "network.bw.ports='lan3'"),
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"an internet port written with a space, into the LAN bridge", spaced,
-			replaceLine(spaced, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'wan'"),
-			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'br-lan'"},
-		{"a default route written with spaces", apNetwork,
-			apNetwork + "network.r=route\nnetwork.r.interface='wg0'\nnetwork.r.target=' 0.0.0.0'\nnetwork.r.netmask='0.0.0.0 '\n",
-			"CHANGES VPN OR POLICY ROUTING: every destination through 'wg0'"},
-		{"a routing rule whose destination is a space", apNetwork,
-			apNetwork + "network.u=rule\nnetwork.u.lookup='100'\nnetwork.u.dest=' '\n",
-			"CHANGES VPN OR POLICY ROUTING: a routing rule for every destination"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			got := strings.Join(predicates(mustStates(t, with(baseShows(), "network", c.before)),
-				mustStates(t, with(baseShows(), "network", c.after))), "\n")
-			if !strings.Contains(got, c.want) {
-				t.Errorf("headlines %q, want %q", got, c.want)
-			}
-		})
-	}
-	// What the internet port does not change still runs: wan's protocol, a LAN port added to the
-	// LAN bridge, a bridge named as the internet port left as it is.
-	for _, c := range []struct{ name, before, after string }{
-		{"wan's protocol", apNetwork, replaceLine(apNetwork, "network.wan.proto='dhcp'", "network.wan.proto='pppoe'")},
-		{"a LAN port into the LAN bridge", apNetwork + "network.cfg040f15=device\nnetwork.cfg040f15.name='lan4'\n",
-			replaceLine(apNetwork, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'lan4'") +
-				"network.cfg040f15=device\nnetwork.cfg040f15.name='lan4'\n"},
-		{"the bridge's own type said again", bridged, replaceLine(bridged, "network.bw.type='bridge'", "network.bw.type='bridge'\nnetwork.bw.mtu='1500'")},
-	} {
-		if got := predicates(mustStates(t, with(baseShows(), "network", c.before)),
-			mustStates(t, with(baseShows(), "network", c.after))); len(got) != 0 {
-			t.Errorf("%s: held as %q", c.name, got)
-		}
-	}
-}
-
-// The internet port as the router carries it in other shapes: a VLAN of a bridge (DSA) or of a
-// switch (swconfig), an alias, a VLAN or a macvlan on top of it, and a firewall zone that takes it
-// by device or by subnet rather than by network. Each must still be held when it moves or joins.
-func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
-	dsa := replaceLine(replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='br-lan.2'"),
-		"network.wan6.device='wan'", "network.wan6.device='br-lan.2'"), "network.lan.device='br-lan'", "network.lan.device='br-lan.1'") +
+// How the router is wired is held, whatever it is wired to: which port ends up carrying the
+// internet is netifd's to resolve (bridges, bridge and switch VLANs, aliases, stacked devices, a
+// protocol's own device), and following every way it does never ends. So a change to a VLAN table,
+// to the ports or base of a device, or to what an interface sits on waits for the owner, one case
+// per class below. A guest network, a bridge made in the same change with no ports and an
+// interface on it, still runs.
+func TestRewiringIsHeld(t *testing.T) {
+	dsa := apNetwork +
 		"network.v1=bridge-vlan\nnetwork.v1.device='br-lan'\nnetwork.v1.vlan='1'\nnetwork.v1.ports='lan1:u*' 'lan2:u*'\n" +
 		"network.v2=bridge-vlan\nnetwork.v2.device='br-lan'\nnetwork.v2.vlan='2'\nnetwork.v2.ports='lan3:u*'\n"
-	sw := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='eth0.2'"),
-		"network.wan6.device='wan'", "network.wan6.device='eth0.2'") +
-		"network.sw=switch\nnetwork.sw.name='switch0'\nnetwork.sw.enable_vlan='1'\n" +
+	sw := apNetwork + "network.sw=switch\nnetwork.sw.name='switch0'\nnetwork.sw.enable_vlan='1'\n" +
 		"network.sv1=switch_vlan\nnetwork.sv1.device='switch0'\nnetwork.sv1.vlan='1'\nnetwork.sv1.ports='1 2 3 6t'\n" +
 		"network.sv2=switch_vlan\nnetwork.sv2.device='switch0'\nnetwork.sv2.vlan='2'\nnetwork.sv2.ports='0 6t'\n"
-	macvlan := apNetwork + "network.mv=device\nnetwork.mv.type='macvlan'\nnetwork.mv.ifname='wan'\nnetwork.mv.name='wanmac'\n"
 	fw := apFirewall
 	wildcard := replaceLine(fw, "firewall.guest.network='guest'", "firewall.guest.network='guest'\nfirewall.guest.device='wa+'")
-	negated := replaceLine(fw, "firewall.guest.network='guest'", "firewall.guest.network='guest'\nfirewall.guest.device='!lan1'")
-	type cfg struct{ network, firewall string }
+	guest := apNetwork + "network.bg=device\nnetwork.bg.type='bridge'\nnetwork.bg.name='br-iot'\n" +
+		"network.iot=interface\nnetwork.iot.device='br-iot'\nnetwork.iot.proto='static'\nnetwork.iot.ipaddr='192.168.7.1'\n"
+	type cfg struct{ network, firewall, wireless string }
 	run := func(b, a cfg) string {
 		t.Helper()
 		shows := func(c cfg) map[string]string {
@@ -388,6 +320,9 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 			if c.firewall != "" {
 				s = with(s, "firewall", c.firewall)
 			}
+			if c.wireless != "" {
+				s = with(s, "wireless", c.wireless)
+			}
 			return s
 		}
 		return strings.Join(predicates(mustStates(t, shows(b)), mustStates(t, shows(a))), "\n")
@@ -397,50 +332,61 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 		before, after cfg
 		want          string
 	}{
-		{"the internet VLAN's port moved to the LAN VLAN", cfg{network: dsa},
-			cfg{network: replaceLine(replaceLine(dsa, "network.v1.ports='lan1:u*' 'lan2:u*'", "network.v1.ports='lan1:u*' 'lan2:u*' 'lan3:u*'"),
-				"network.v2.ports='lan3:u*'\n", "")},
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"the internet VLAN's port added tagged to the LAN VLAN", cfg{network: dsa},
+		{"the internet port moved: wan pointed at another port", cfg{},
+			cfg{network: replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='lan3'")},
+			"REWIRES THE NETWORK: interface 'wan' sits on 'wan' -> 'lan3'"},
+		{"a port into a bridge", cfg{},
+			cfg{network: replaceLine(apNetwork, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'wan'")},
+			"REWIRES THE NETWORK: device 'br-lan' takes"},
+		{"a bridge's VLAN membership", cfg{network: dsa},
 			cfg{network: replaceLine(dsa, "network.v1.ports='lan1:u*' 'lan2:u*'", "network.v1.ports='lan1:u*' 'lan2:u*' 'lan3:t'")},
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"the internet VLAN's port made an interface of its own", cfg{network: dsa},
-			cfg{network: dsa + "network.x=interface\nnetwork.x.device='lan3'\nnetwork.x.proto='static'\n"},
-			"joins interface 'x'"},
-		{"the internet switch port moved to the LAN VLAN", cfg{network: sw},
-			cfg{network: replaceLine(replaceLine(sw, "network.sv1.ports='1 2 3 6t'", "network.sv1.ports='0 1 2 3 6t'"),
-				"network.sv2.ports='0 6t'", "network.sv2.ports='6t'")},
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"the internet switch port added tagged to the LAN VLAN", cfg{network: sw},
+			"REWIRES THE NETWORK: network.v1"},
+		{"a switch's VLAN membership", cfg{network: sw},
 			cfg{network: replaceLine(sw, "network.sv1.ports='1 2 3 6t'", "network.sv1.ports='0t 1 2 3 6t'")},
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"a LAN switch port added tagged to the internet VLAN", cfg{network: sw},
-			cfg{network: replaceLine(sw, "network.sv2.ports='0 6t'", "network.sv2.ports='0 5t 6t'")},
-			"WEAKENS THE FIREWALL: the internet port changes"},
-		{"an interface on an alias of wan", cfg{},
+			"REWIRES THE NETWORK: network.sv1"},
+		{"an interface on an alias", cfg{},
 			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='@wan'\nnetwork.x.proto='static'\n"},
-			"joins interface 'x'"},
-		{"an interface on a VLAN of the internet port", cfg{},
-			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='wan.10'\nnetwork.x.proto='static'\n"},
-			"joins interface 'x'"},
-		{"a macvlan on the internet port", cfg{},
-			cfg{network: macvlan},
-			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'wanmac'"},
-		{"an interface on a macvlan of the internet port that was already there", cfg{network: macvlan},
-			cfg{network: macvlan + "network.x=interface\nnetwork.x.device='wanmac'\nnetwork.x.proto='static'\n"},
-			"joins interface 'x'"},
-		{"the LAN zone takes the internet port by device", cfg{},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> '@wan'"},
+		{"an interface on a protocol's device", cfg{},
+			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='pppoe-wan'\nnetwork.x.proto='static'\n"},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> 'pppoe-wan'"},
+		{"a macvlan on a port", cfg{},
+			cfg{network: apNetwork + "network.mv=device\nnetwork.mv.type='macvlan'\nnetwork.mv.ifname='wan'\nnetwork.mv.name='wanmac'\n"},
+			"REWIRES THE NETWORK: device 'wanmac' takes none -> 'wan'"},
+		{"a bridge made with a port in it", cfg{},
+			cfg{network: apNetwork + "network.bx=device\nnetwork.bx.type='bridge'\nnetwork.bx.name='br-x'\nnetwork.bx.ports='wan'\n"},
+			"REWIRES THE NETWORK: device 'br-x' takes none -> 'wan'"},
+		{"a port added to a guest bridge made earlier", cfg{network: guest},
+			cfg{network: replaceLine(guest, "network.bg.name='br-iot'", "network.bg.name='br-iot'\nnetwork.bg.ports='wan'")},
+			"REWIRES THE NETWORK: device 'br-iot' takes none -> 'wan'"},
+		{"an interface moved onto a guest bridge made earlier", cfg{network: guest},
+			cfg{network: replaceLine(guest, "network.lan.device='br-lan'", "network.lan.device='br-iot'")},
+			"REWIRES THE NETWORK: interface 'lan' sits on 'br-lan' -> 'br-iot'"},
+		{"a device removed", cfg{},
+			cfg{network: replaceLine(replaceLine(replaceLine(replaceLine(apNetwork, "network.cfg030f15=device\n", ""),
+				"network.cfg030f15.name='br-lan'\n", ""), "network.cfg030f15.type='bridge'\n", ""), "network.cfg030f15.ports='lan1' 'lan2' 'lan3'\n", "")},
+			"REWIRES THE NETWORK: device 'br-lan' takes 'lan1', 'lan2', 'lan3' -> none"},
+		{"a zone that takes a device", cfg{},
 			cfg{firewall: replaceLine(fw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan'\nfirewall.cfg02dc81.device='wan'")},
 			"WEAKENS THE FIREWALL: zone 'lan' matches by device or subnet"},
-		{"the LAN zone takes every address by subnet", cfg{},
+		{"a zone that takes every address by subnet", cfg{},
 			cfg{firewall: replaceLine(fw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan'\nfirewall.cfg02dc81.subnet='0.0.0.0/0'")},
 			"WEAKENS THE FIREWALL: zone 'lan' matches by device or subnet"},
-		{"a zone that takes the internet port by a device pattern faces the internet", cfg{firewall: wildcard},
+		{"a zone that takes devices by a pattern faces the internet", cfg{firewall: wildcard},
 			cfg{firewall: replaceLine(wildcard, "firewall.guest.input='REJECT'", "firewall.guest.input='ACCEPT'")},
 			"WEAKENS THE FIREWALL: zone 'guest' accepts what comes in from the internet"},
-		{"a zone that takes every device but one faces the internet", cfg{firewall: negated},
-			cfg{firewall: replaceLine(negated, "firewall.guest.input='REJECT'", "firewall.guest.input='ACCEPT'")},
-			"WEAKENS THE FIREWALL: zone 'guest' accepts what comes in from the internet"},
+		{"a raw nftables fragment on a LAN rule", cfg{},
+			cfg{firewall: fw + "firewall.x=rule\nfirewall.x.src='lan'\nfirewall.x.proto='tcp'\nfirewall.x.dest_port='22'\nfirewall.x.target='ACCEPT'\nfirewall.x.extra='counter'\n"},
+			"WEAKENS THE FIREWALL: raw nftables in firewall.x.extra"},
+		{"a raw nftables fragment on a zone", cfg{},
+			cfg{firewall: replaceLine(fw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan'\nfirewall.cfg02dc81.extra_src='counter'")},
+			"WEAKENS THE FIREWALL: raw nftables in firewall.@zone[0].extra_src"},
+		{"a default route written with spaces", cfg{},
+			cfg{network: apNetwork + "network.r=route\nnetwork.r.interface='wg0'\nnetwork.r.target=' 0.0.0.0'\nnetwork.r.netmask='0.0.0.0 '\n"},
+			"CHANGES VPN OR POLICY ROUTING: every destination through 'wg0'"},
+		{"a routing rule whose destination is a space", cfg{},
+			cfg{network: apNetwork + "network.u=rule\nnetwork.u.lookup='100'\nnetwork.u.dest=' '\n"},
+			"CHANGES VPN OR POLICY ROUTING: a routing rule for every destination"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := run(c.before, c.after); !strings.Contains(got, c.want) {
@@ -448,82 +394,22 @@ func TestInternetPortSeenThroughVLANsAliasesAndZones(t *testing.T) {
 			}
 		})
 	}
-	// What leaves the internet port where it is still runs: an interface on the LAN's own VLAN, a
-	// VLAN of a LAN port, a zone's input on a zone that does not face the internet.
+	// What leaves the wiring as it is still runs: a guest network made in one change (a bridge with
+	// no ports, an interface on it, a Wi-Fi with a password on that network), an interface's own
+	// address, a device's MTU, an interface with no device.
+	wifiGuest := apWireless + "wireless.iot=wifi-iface\nwireless.iot.device='radio0'\nwireless.iot.mode='ap'\n" +
+		"wireless.iot.network='iot'\nwireless.iot.ssid='IoT'\nwireless.iot.encryption='sae'\nwireless.iot.key='canary-key'\n"
 	for _, c := range []struct {
 		name          string
 		before, after cfg
 	}{
-		{"an interface on the LAN VLAN", cfg{network: dsa},
-			cfg{network: dsa + "network.iot=interface\nnetwork.iot.device='br-lan.1'\nnetwork.iot.proto='static'\n"}},
-		{"a LAN port added to a new VLAN of the bridge", cfg{network: dsa},
-			cfg{network: dsa + "network.v3=bridge-vlan\nnetwork.v3.device='br-lan'\nnetwork.v3.vlan='3'\nnetwork.v3.ports='lan2:t'\n"}},
-		{"an interface on a VLAN of a LAN port", cfg{},
-			cfg{network: apNetwork + "network.iot=interface\nnetwork.iot.device='lan2.5'\nnetwork.iot.proto='static'\n"}},
-		{"a switch port moved between LAN VLANs", cfg{network: sw + "network.sv3=switch_vlan\nnetwork.sv3.device='switch0'\nnetwork.sv3.vlan='3'\nnetwork.sv3.ports='6t'\n"},
-			cfg{network: sw + "network.sv3=switch_vlan\nnetwork.sv3.device='switch0'\nnetwork.sv3.vlan='3'\nnetwork.sv3.ports='3 6t'\n"}},
+		{"a guest network made in one change", cfg{}, cfg{network: guest, wireless: wifiGuest}},
+		{"an interface's own address", cfg{}, cfg{network: replaceLine(apNetwork, "network.lan.ipaddr='192.168.1.1'", "network.lan.ipaddr='192.168.2.1'")}},
+		{"a device's MTU", cfg{}, cfg{network: replaceLine(apNetwork, "network.cfg030f15.type='bridge'", "network.cfg030f15.type='bridge'\nnetwork.cfg030f15.mtu='1500'")}},
+		{"an interface with no device", cfg{}, cfg{network: apNetwork + "network.y=interface\nnetwork.y.proto='static'\nnetwork.y.ipaddr='10.9.9.1'\n"}},
 	} {
 		if got := run(c.before, c.after); got != "" {
 			t.Errorf("%s: held as %q", c.name, got)
 		}
-	}
-}
-
-// The internet as interfaces rather than ports: a VLAN of a plain port, the device a protocol makes
-// for wan (pppoe-wan), an interface the internet zone lists, and an alias of an alias.
-func TestInternetInterfacesAreFollowed(t *testing.T) {
-	fw := apFirewall
-	plain := replaceLine(replaceLine(apNetwork, "network.wan.device='wan'", "network.wan.device='lan4.2'"),
-		"network.wan6.device='wan'", "network.wan6.device='lan4.2'")
-	wwanFw := replaceLine(fw, "firewall.cfg03dc81.network='wan' 'wan6'", "firewall.cfg03dc81.network='wan' 'wan6' 'wwan'")
-	wwanNet := apNetwork + "network.wwan=interface\nnetwork.wwan.proto='dhcp'\n"
-	onAlias := apNetwork + "network.y=interface\nnetwork.y.device='@wan'\nnetwork.y.proto='static'\n"
-	inZone := replaceLine(fw, "firewall.cfg03dc81.network='wan' 'wan6'", "firewall.cfg03dc81.network='wan' 'wan6' 'y'")
-	type cfg struct{ network, firewall string }
-	run := func(b, a cfg) string {
-		t.Helper()
-		shows := func(c cfg) map[string]string {
-			s := baseShows()
-			if c.network != "" {
-				s = with(s, "network", c.network)
-			}
-			if c.firewall != "" {
-				s = with(s, "firewall", c.firewall)
-			}
-			return s
-		}
-		return strings.Join(predicates(mustStates(t, shows(b)), mustStates(t, shows(a))), "\n")
-	}
-	for _, c := range []struct {
-		name          string
-		before, after cfg
-		want          string
-	}{
-		{"a VLAN of a plain port named as the internet port, its port into the LAN bridge", cfg{network: plain},
-			cfg{network: replaceLine(plain, "network.cfg030f15.ports='lan1' 'lan2' 'lan3'", "network.cfg030f15.ports='lan1' 'lan2' 'lan3' 'lan4'")},
-			"WEAKENS THE FIREWALL: the internet port 'lan4' joins 'br-lan'"},
-		{"an interface on the device PPPoE makes for wan", cfg{},
-			cfg{network: apNetwork + "network.x=interface\nnetwork.x.device='pppoe-wan'\nnetwork.x.proto='static'\n"},
-			"joins interface 'x'"},
-		{"an interface on an alias of an interface the internet zone lists", cfg{network: wwanNet, firewall: wwanFw},
-			cfg{network: wwanNet + "network.x=interface\nnetwork.x.device='@wwan'\nnetwork.x.proto='static'\n", firewall: wwanFw},
-			"joins interface 'x'"},
-		{"an alias of an alias of wan", cfg{network: onAlias},
-			cfg{network: onAlias + "network.x=interface\nnetwork.x.device='@y'\nnetwork.x.proto='static'\n"},
-			"joins interface 'x'"},
-		{"an interface on the internet port taken out of the internet zone", cfg{network: onAlias, firewall: inZone},
-			cfg{network: onAlias},
-			"joins interface 'y'"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			if got := run(c.before, c.after); !strings.Contains(got, c.want) {
-				t.Errorf("headlines %q, want %q", got, c.want)
-			}
-		})
-	}
-	// An interface on the internet port that the internet zone lists is the internet side, not a
-	// join: a second uplink address, a modem's management address.
-	if got := run(cfg{}, cfg{network: onAlias, firewall: inZone}); got != "" {
-		t.Errorf("an interface on the internet port inside the internet zone: held as %q", got)
 	}
 }

@@ -39,21 +39,20 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     And the answer is not an error: it says HELD, with a five-letter id and when it expires
     And the audit log records the call as HELD
 
-  # bound to: TestTier2RunsInTheWindow
+  # bound to: TestTier2RunsInTheWindow, TestRewiringIsHeld
   Scenario: an ordinary change still runs in the window
     Given the client's unlock window is open
     When it changes the router's description, adds a static lease, or restarts a service
+    Or it sets up a guest network: a bridge with no ports, an interface on it, a Wi-Fi with a password on that network
     Then the change is applied as before, with the rollback armed
 
   # bound to: TestSplitRedirectHeldOnSecondCall, TestWanPortIntoLanBridgeHeld, TestZoneRenameHeld
-  # bound to: TestPredicatesReadTheState, TestKeywordsAreReadTheWayTheyCouldBeApplied, TestInternetPortMovedInTwoStepsHeld
-  # bound to: TestInternetPortSeenThroughVLANsAliasesAndZones, TestInternetInterfacesAreFollowed
+  # bound to: TestPredicatesReadTheState, TestKeywordsAreReadTheWayTheyCouldBeApplied, TestRewiringIsHeld
   Scenario: what decides is the state a change leaves, not the call
     When a port forward from the internet is made disabled in one call and switched on in the next
     Or the internet port is added to the LAN bridge
-    Or the internet port is moved in one call, so that the next can put the old port into the LAN bridge
-    Or the internet port moves or joins through a bridge or switch VLAN, an alias, a VLAN or macvlan on top of it, or a zone that takes it by device or subnet
-    Or an interface is put on the internet side by another name: a device a protocol makes for wan, an interface the internet zone lists, an alias of an alias
+    Or the router is rewired: a VLAN table, the ports or base of a device, or what an interface sits on
+    Or a zone takes a device or a subnet, or a raw nftables fragment is set anywhere in the firewall
     Or the LAN zone is renamed so that it becomes an internet zone
     Then the call that completes it is held
     And a keyword is read trimmed and in any case, and a value nobody knows reads as the one that opens

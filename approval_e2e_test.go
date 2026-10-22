@@ -654,7 +654,8 @@ func TestSplitRedirectHeldOnSecondCall(t *testing.T) {
 	}
 }
 
-// The internet port put into the LAN bridge: the bridge's ports, written as one string.
+// The internet port put into the LAN bridge, the bridge's ports written as one string: a change to
+// a device's ports, held as rewiring whatever the port is.
 func TestWanPortIntoLanBridgeHeld(t *testing.T) {
 	r := newApRig(t, "")
 	r.unlock()
@@ -662,7 +663,7 @@ func TestWanPortIntoLanBridgeHeld(t *testing.T) {
 		"network.cfg030f15.ports='lan1 lan2 lan3 wan'"))
 	out, isErr := r.apply(map[string]any{"config": "network", "section": "@device[0]", "option": "ports", "value": "lan1 lan2 lan3 wan"})
 	id := r.mustHold(out, isErr)
-	if a := r.action(id); !strings.Contains(a.Headline, "WEAKENS THE FIREWALL: the internet port 'wan' joins 'br-lan'") {
+	if a := r.action(id); !strings.Contains(a.Headline, "REWIRES THE NETWORK: device 'br-lan' takes 'lan1', 'lan2', 'lan3' -> 'lan1', 'lan2', 'lan3', 'wan'") {
 		t.Errorf("headline %q", a.Headline)
 	}
 }
