@@ -23,15 +23,12 @@ hash of its card.
 - Keywords are decided on trimmed and in any case, and a value the classifier does not know counts
   as the one that opens; `masq` is read as a boolean; an approved apply checks the configs again as
   its last step before staging; an answered `action_list`, the approver's poll, writes no audit line.
-- Moving the internet port is held: a change to `device` or `ifname` of `network.wan` or `wan6`,
-  or to the ports of a device section they name, so one call cannot point wan elsewhere and the
-  next put the old port into the LAN bridge. For a VLAN of a bridge or a switch, the VLAN's members
-  and every other VLAN that carries its ports count too. A device on top of the internet port (an
-  alias of an interface on the internet side, a VLAN `wan.10`, a macvlan, a protocol's device such
-  as `pppoe-wan`) is the internet port for what joins it, an interface the internet zone lists is
-  the internet side and not a join, a VLAN of a plain port counts as that port, a zone that
-  takes the internet port by `device` faces the internet, and any change to what a zone takes by
-  `device` or `subnet` is held. Routes and routing rules are read trimmed.
+- How the router is wired is held whatever it wires to: any change to a `bridge-vlan`,
+  `switch_vlan` or `switch_port` section, to a device's `ports` or `ifname` (one added or removed
+  included), or to what an interface sits on, except an interface put on a device made in the
+  same change with neither (a guest network). A zone that takes a `device` or a `subnet` faces
+  the internet, and any change to what it takes, or to a raw nftables fragment (`extra`,
+  `extra_src`, `extra_dest`), is held. Routes and routing rules are read trimmed.
 - Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
   approval facts (approver, factor, on, ready).
 

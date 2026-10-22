@@ -791,7 +791,8 @@ is an ACCEPT.
 | Held | Read as |
 |---|---|
 | A port opened to the internet | an enabled redirect (any target but SNAT) or rule (any target but DROP or REJECT, unset included) from an internet zone or `*`, not there before |
-| The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet, the internet port moved (what `network.wan` and `wan6` name as `device` or `ifname`, the ports or base of a device they name, and for a VLAN of a bridge or a switch the VLANs that carry its ports) or joining a bridge, another interface or a device on top of it (an alias of an interface on the internet side, `@wan` or one the internet zone lists, followed through aliases of aliases; a VLAN `wan.10`; a macvlan; a protocol's device `pppoe-wan`), a VLAN of a plain port counting as that port, and any change to what a zone takes by `device` or `subnet` (a zone that takes the internet port by device, a `+` pattern or a negation faces the internet) |
+| The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet (a zone that takes a `device` or a `subnet` counts as one), any change to what a zone takes by `device` or `subnet`, and any change to a raw nftables fragment (`extra`, `extra_src`, `extra_dest`) anywhere in the firewall |
+| The network rewired | any change to a `bridge-vlan`, `switch_vlan` or `switch_port` section, to the `ports` or `ifname` of a device (one added or removed included), or to what an interface sits on (`device`, `ifname`), whatever it names: which port ends up carrying the internet is netifd's to resolve, and following every way it does is not attempted. The one shape that runs is an interface put on a device made in the same change with neither ports nor `ifname`, which is how a guest network is set up |
 | VPN or policy routing | any change to a WireGuard interface or peer, a route or rule for every destination added, changed or removed, anything in `pbr` |
 | Who answers DNS | dnsmasq's `server`, `address`, `noresolv`, `resolvfile`, `rebind_protection`; DHCP option 6; a host, domain or cname for a name with a dot; an interface's `dns` and `peerdns` |
 | The time servers | any change to a `timeserver` section: the codes are only as good as the clock |
@@ -1005,11 +1006,12 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
   nothing, and the owner can lift it at once by setting a new PIN or re-enrolling, which
   closes the old window and clears the throttle on a running daemon.
 - What is held is decided by named rules over the state a change leaves, and a rule is a list.
-  A change whose danger lies somewhere no rule reads runs in an unlock window as tier 2: the
-  internet reached through a path the rules do not follow (a tunnel or a bridge of a kind they do
-  not name, an uplink no interface or zone names), a setting of a package they do not know, or a
-  value whose meaning is decided at run time. Held changes live in the daemon's memory, so a
-  restart drops them, and the agent proposes again.
+  A change whose danger lies somewhere no rule reads runs in an unlock window as tier 2, with the
+  rollback: a Wi-Fi interface's `network` (an access point or a station joined to any network,
+  the internet side included), an interface removed or left with no device, a device's other
+  options, a setting of a package the rules do not know, or a value whose meaning is decided at
+  run time. Held changes live in the daemon's memory, so a restart drops them, and the agent
+  proposes again.
 - Rate-limit windows are process-scoped, so a restart resets them — erring toward allowing
   what you already granted.
 - Tool output is capped at 64 KB, and ubus replies over 8 KB have arrays capped at 16

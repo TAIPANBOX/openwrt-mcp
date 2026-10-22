@@ -407,6 +407,7 @@ func TestRewiringIsHeld(t *testing.T) {
 		{"an interface's own address", cfg{}, cfg{network: replaceLine(apNetwork, "network.lan.ipaddr='192.168.1.1'", "network.lan.ipaddr='192.168.2.1'")}},
 		{"a device's MTU", cfg{}, cfg{network: replaceLine(apNetwork, "network.cfg030f15.type='bridge'", "network.cfg030f15.type='bridge'\nnetwork.cfg030f15.mtu='1500'")}},
 		{"an interface with no device", cfg{}, cfg{network: apNetwork + "network.y=interface\nnetwork.y.proto='static'\nnetwork.y.ipaddr='10.9.9.1'\n"}},
+		{"a guest bridge with no ports removed", cfg{network: guest}, cfg{network: apNetwork}},
 	} {
 		if got := run(c.before, c.after); got != "" {
 			t.Errorf("%s: held as %q", c.name, got)
