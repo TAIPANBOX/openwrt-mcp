@@ -731,17 +731,16 @@ func firewallWeakened(before, after states) []string {
 		out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: the zones that face the internet change (%s -> %s)",
 			showList(bz), showList(az)))
 	}
-	// The internet port, as the router has it now.
-	var wanDevs []string
-	for _, n := range []string{"wan", "wan6"} {
-		if s := before.get("network").section(n); s != nil {
-			for _, k := range []string{"device", "ifname"} {
-				if d := s.get(k); d != "" {
-					wanDevs = append(wanDevs, d)
-				}
-			}
-		}
+	// The internet port, as either state has it. Moving it is held itself: otherwise one call
+	// points wan at another port and the next puts the old one into the LAN bridge, which is then
+	// no longer the internet port.
+	bp, bshape := internetPort(before)
+	ap, ashape := internetPort(after)
+	if strings.Join(bshape, "\x00") != strings.Join(ashape, "\x00") {
+		out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: the internet port changes (%s -> %s)",
+			showList(bp), showList(ap)))
 	}
+	wanDevs := dedupe(sortStrs(append(append([]string(nil), bp...), ap...)))
 	joins := func(st states) map[string]string {
 		got := map[string]string{}
 		net := st.get("network")
@@ -782,6 +781,44 @@ func firewallWeakened(before, after states) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// internetPort reads the internet port from network.wan and wan6 (device, or ifname on an older
+// config) and the ports of a device section either names, a bridge most often, each value trimmed.
+// shape says where each came from, so a value moved between those options counts as a change.
+func internetPort(st states) (ports, shape []string) {
+	net := st.get("network")
+	seen := map[string]bool{}
+	add := func(where, v string) {
+		shape = append(shape, where+"="+v)
+		if !seen[v] {
+			seen[v] = true
+			ports = append(ports, v)
+		}
+	}
+	var named []string
+	for _, n := range []string{"wan", "wan6"} {
+		if s := net.section(n); s != nil {
+			for _, k := range []string{"device", "ifname"} {
+				for _, v := range s.list(k) {
+					add(n+"."+k, v)
+					named = append(named, v)
+				}
+			}
+		}
+	}
+	for _, d := range net.sectionsOf("device") {
+		name := strings.TrimSpace(d.get("name"))
+		for _, wd := range named {
+			if name == wd {
+				for _, v := range d.list("ports") {
+					add(name+".ports", v)
+				}
+				break
+			}
+		}
+	}
+	return sortStrs(ports), sortStrs(shape)
 }
 
 // sectionChanges reports, by label, the sections pick selects that were added, removed or changed
@@ -842,8 +879,8 @@ func vpnRouting(before, after states) []string {
 		got := map[string]string{}
 		for _, typ := range []string{"route", "route6"} {
 			for _, s := range st.get("network").sectionsOf(typ) {
-				t := s.get("target")
-				if defaultDestination(t) || (t == "0.0.0.0" && s.get("netmask") == "0.0.0.0") {
+				t := strings.TrimSpace(s.get("target"))
+				if defaultDestination(t) || (t == "0.0.0.0" && strings.TrimSpace(s.get("netmask")) == "0.0.0.0") {
 					got[signature(s)] = fmt.Sprintf("CHANGES VPN OR POLICY ROUTING: every destination through %s",
 						showValue(s.get("interface")))
 				}
@@ -851,7 +888,7 @@ func vpnRouting(before, after states) []string {
 		}
 		for _, typ := range []string{"rule", "rule6"} {
 			for _, s := range st.get("network").sectionsOf(typ) {
-				if d := s.get("dest"); d == "" || defaultDestination(d) {
+				if d := strings.TrimSpace(s.get("dest")); d == "" || defaultDestination(d) {
 					got[signature(s)] = "CHANGES VPN OR POLICY ROUTING: a routing rule for every destination"
 				}
 			}

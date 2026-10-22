@@ -168,6 +168,8 @@ func TestRealUCIClassification(t *testing.T) {
 			"the zones that face the internet change"},
 		{"the internet port into the bridge, as one string", []UCIChange{ch("network", "@device[0]", "ports", "lan1 lan2 wan")}, tierHeld,
 			"WEAKENS THE FIREWALL: the internet port 'wan' joins 'br-lan'"},
+		{"the internet port moved", []UCIChange{ch("network", "wan", "device", "lan3")}, tierHeld,
+			"WEAKENS THE FIREWALL: the internet port changes"},
 		{"an upstream DNS server", []UCIChange{ch("dhcp", "@dnsmasq[0]", "server", "9.9.9.9")}, tierHeld,
 			"CHANGES WHO ANSWERS DNS: dhcp.@dnsmasq[0].server"},
 		{"the home Wi-Fi without a password", []UCIChange{ch("wireless", "default_radio0", "encryption", "none")}, tierHeld,

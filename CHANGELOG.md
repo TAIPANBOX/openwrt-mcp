@@ -23,6 +23,9 @@ hash of its card.
 - Keywords are decided on trimmed and in any case, and a value the classifier does not know counts
   as the one that opens; `masq` is read as a boolean; an approved apply checks the configs again as
   its last step before staging; an answered `action_list`, the approver's poll, writes no audit line.
+- Moving the internet port is held: a change to `device` or `ifname` of `network.wan` or `wan6`,
+  or to the ports of a device section they name, so one call cannot point wan elsewhere and the
+  next put the old port into the LAN bridge. Routes and routing rules are read trimmed.
 - Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
   approval facts (approver, factor, on, ready).
 
@@ -33,6 +36,9 @@ hash of its card.
   own configs and the ways into the router, and `file.*`, `system.sysupgrade`, `system.signal`,
   `service.*`, `uci.*` and `rpc-sys.*` over ubus, whatever its grants say. A client without an
   approval section works exactly as before.
+- A policy with `hold '1'` grants only `uci_apply` and `ubus_call`, the tools an approval can run;
+  one that also grants another tool (`uci_confirm`, `uci_get`) stops the configuration loading,
+  and a `list hold` rule naming `apk_add` does too.
 
 ## v0.5.0-taipanbox.4 (binary version 0.5.0.4)
 

@@ -791,7 +791,7 @@ is an ACCEPT.
 | Held | Read as |
 |---|---|
 | A port opened to the internet | an enabled redirect (any target but SNAT) or rule (any target but DROP or REJECT, unset included) from an internet zone or `*`, not there before |
-| The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet, the internet port joining a bridge or another interface |
+| The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet, the internet port moved (what `network.wan` and `wan6` name as `device` or `ifname`, and the ports of a device they name) or joining a bridge or another interface |
 | VPN or policy routing | any change to a WireGuard interface or peer, a route or rule for every destination added, changed or removed, anything in `pbr` |
 | Who answers DNS | dnsmasq's `server`, `address`, `noresolv`, `resolvfile`, `rebind_protection`; DHCP option 6; a host, domain or cname for a name with a dot; an interface's `dns` and `peerdns` |
 | The time servers | any change to a `timeserver` section: the codes are only as good as the clock |
