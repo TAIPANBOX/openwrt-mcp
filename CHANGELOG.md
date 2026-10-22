@@ -25,7 +25,11 @@ hash of its card.
   its last step before staging; an answered `action_list`, the approver's poll, writes no audit line.
 - Moving the internet port is held: a change to `device` or `ifname` of `network.wan` or `wan6`,
   or to the ports of a device section they name, so one call cannot point wan elsewhere and the
-  next put the old port into the LAN bridge. Routes and routing rules are read trimmed.
+  next put the old port into the LAN bridge. For a VLAN of a bridge or a switch, the VLAN's members
+  and every other VLAN that carries its ports count too. A device on top of the internet port (an
+  alias `@wan`, a VLAN `wan.10`, a macvlan) is the internet port for what joins it, a zone that
+  takes the internet port by `device` faces the internet, and any change to what a zone takes by
+  `device` or `subnet` is held. Routes and routing rules are read trimmed.
 - Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
   approval facts (approver, factor, on, ready).
 

@@ -594,6 +594,11 @@ func firewallOf(st states) fwModel {
 	m := fwModel{wanZones: map[string]bool{}, zoneNets: map[string]string{}, zones: map[string]*uciSect{},
 		defIn: "DROP", defFwd: "DROP"}
 	fw := st.get("firewall")
+	ports, _ := internetPort(st)
+	wanPorts := map[string]bool{}
+	for _, p := range ports {
+		wanPorts[p] = true
+	}
 	for _, d := range fw.sectionsOf("defaults") {
 		if v := d.word("input"); v != "" {
 			m.defIn = v
@@ -621,6 +626,11 @@ func firewallOf(st states) fwModel {
 		}
 		if uciTrue(z.get("masq")) {
 			m.wanZones[name] = true
+		}
+		for _, d := range z.list("device") {
+			if zoneDeviceCovers(d, wanPorts) {
+				m.wanZones[name] = true
+			}
 		}
 	}
 	return m
@@ -731,6 +741,40 @@ func firewallWeakened(before, after states) []string {
 		out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: the zones that face the internet change (%s -> %s)",
 			showList(bz), showList(az)))
 	}
+	// A zone may take devices and subnets as well as networks (fw4's device and subnet lists), so
+	// one that takes the internet port, or every address, is an internet zone by another name:
+	// any change to what a zone takes that way is held.
+	takes := func(st states) map[string]string {
+		got := map[string]string{}
+		for _, z := range st.get("firewall").sectionsOf("zone") {
+			d, n := z.list("device"), z.list("subnet")
+			if len(d)+len(n) > 0 {
+				got[z.name("name")] += "device " + showList(d) + ", subnet " + showList(n) + "; "
+			}
+		}
+		return got
+	}
+	bt, at := takes(before), takes(after)
+	zones := map[string]bool{}
+	for z := range bt {
+		zones[z] = true
+	}
+	for z := range at {
+		zones[z] = true
+	}
+	for _, z := range sortedKeys(zones) {
+		if bt[z] != at[z] {
+			was, now := strings.TrimSuffix(bt[z], "; "), strings.TrimSuffix(at[z], "; ")
+			if was == "" {
+				was = "none"
+			}
+			if now == "" {
+				now = "none"
+			}
+			out = append(out, fmt.Sprintf("WEAKENS THE FIREWALL: zone %s matches by device or subnet (%s -> %s)",
+				showValue(z), was, now))
+		}
+	}
 	// The internet port, as either state has it. Moving it is held itself: otherwise one call
 	// points wan at another port and the next puts the old one into the LAN bridge, which is then
 	// no longer the internet port.
@@ -744,29 +788,44 @@ func firewallWeakened(before, after states) []string {
 	joins := func(st states) map[string]string {
 		got := map[string]string{}
 		net := st.get("network")
-		for _, wd := range wanDevs {
+		on := map[string]bool{}
+		for _, p := range wanDevs {
+			on[p] = true
+		}
+		// A device on top of the internet port (a macvlan, a VLAN device: its ifname) carries the
+		// internet port's traffic too, so what joins it joins the internet port. A bridge does not
+		// pass that on: a bridge that takes the internet port is itself the join.
+		for grew := true; grew; {
+			grew = false
 			for _, d := range net.sectionsOf("device") {
-				for _, p := range d.list("ports") {
-					if p == wd {
-						name := d.get("name")
-						if name == "" {
-							name = d.label()
+				name := d.name("name")
+				if name == "" {
+					name = d.label()
+				}
+				for _, k := range []string{"ports", "ifname"} {
+					for _, p := range d.list(k) {
+						if !onInternet(p, on) {
+							continue
 						}
-						got[wd+"\x00"+name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins %s",
-							showValue(wd), showValue(name))
+						got[p+"\x00"+name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins %s",
+							showValue(p), showValue(name))
+						if k == "ifname" && !on[name] {
+							on[name] = true
+							grew = true
+						}
 					}
 				}
 			}
-			for _, i := range net.sectionsOf("interface") {
-				if i.Name == "wan" || i.Name == "wan6" {
-					continue
-				}
-				for _, k := range []string{"device", "ifname"} {
-					for _, p := range i.list(k) {
-						if p == wd {
-							got[wd+"\x00if:"+i.Name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins interface %s",
-								showValue(wd), showValue(i.label()))
-						}
+		}
+		for _, i := range net.sectionsOf("interface") {
+			if i.Name == "wan" || i.Name == "wan6" {
+				continue
+			}
+			for _, k := range []string{"device", "ifname"} {
+				for _, p := range i.list(k) {
+					if onInternet(p, on) {
+						got[p+"\x00if:"+i.Name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins interface %s",
+							showValue(p), showValue(i.label()))
 					}
 				}
 			}
@@ -814,11 +873,132 @@ func internetPort(st states) (ports, shape []string) {
 				for _, v := range d.list("ports") {
 					add(name+".ports", v)
 				}
+				for _, v := range d.list("ifname") {
+					add(name+".ifname", v)
+				}
 				break
 			}
 		}
 	}
-	return sortStrs(ports), sortStrs(shape)
+	// A VLAN of a bridge (DSA, `br-lan.2`) or of a switch (swconfig, `eth0.2`) named as the
+	// internet port: the physical ports that carry it are the bridge-vlan sections' or the switch's
+	// to say. The shape holds the internet VLAN's members and every other VLAN that carries one of
+	// its physical ports, and the internet VLAN's ports of a bridge are the internet port as well.
+	bases := map[string]bool{}
+	for _, wd := range named {
+		i := strings.LastIndex(wd, ".")
+		if i <= 0 || bases[wd] {
+			continue
+		}
+		bases[wd] = true
+		base, vid := wd[:i], wd[i+1:]
+		var wanBr []string
+		for _, v := range net.sectionsOf("bridge-vlan") {
+			if v.name("device") == base && v.name("vlan") == vid {
+				for _, p := range v.list("ports") {
+					shape = append(shape, "bridge-vlan "+base+"."+vid+".ports="+p)
+					add("bridge-vlan "+base+"."+vid, vlanPort(p))
+					wanBr = append(wanBr, vlanPort(p))
+				}
+			}
+		}
+		for _, w := range wanBr {
+			for _, v := range net.sectionsOf("bridge-vlan") {
+				for _, p := range v.list("ports") {
+					if vlanPort(p) == w {
+						shape = append(shape, "bridge-vlan "+v.name("device")+"."+v.name("vlan")+" carries "+p)
+					}
+				}
+			}
+		}
+		// A switch: the internet VLAN's members, and wherever else its physical ports (the members
+		// it carries untagged, or every member when none is untagged) are carried.
+		var wanSw []string
+		for _, v := range net.sectionsOf("switch_vlan") {
+			if v.name("vlan") != vid && v.name("vid") != vid {
+				continue
+			}
+			var all []string
+			for _, p := range v.list("ports") {
+				shape = append(shape, "switch_vlan "+v.name("device")+"."+vid+".ports="+p)
+				all = append(all, switchPort(p))
+				if !strings.HasSuffix(strings.TrimSuffix(p, "*"), "t") {
+					wanSw = append(wanSw, switchPort(p))
+				}
+			}
+			if len(wanSw) == 0 {
+				wanSw = all
+			}
+		}
+		for _, w := range wanSw {
+			for _, v := range net.sectionsOf("switch_vlan") {
+				for _, p := range v.list("ports") {
+					if switchPort(p) == w {
+						shape = append(shape, "switch_vlan "+v.name("device")+"."+v.name("vlan")+"/"+v.name("vid")+" carries "+p)
+					}
+				}
+			}
+			for _, sp := range net.sectionsOf("switch_port") {
+				if sp.name("port") == w {
+					shape = append(shape, "switch_port "+signature(sp))
+				}
+			}
+		}
+	}
+	return sortStrs(dedupe(ports)), sortStrs(shape)
+}
+
+// switchPort is a swconfig VLAN member's port number, without its tagging (`6t` is 6).
+func switchPort(p string) string {
+	return strings.TrimRight(strings.TrimSpace(p), "tu*")
+}
+
+// vlanPort is the port of a bridge-vlan member, without its tagging (`lan3:u*` is lan3).
+func vlanPort(p string) string {
+	if i := strings.IndexByte(p, ':'); i >= 0 {
+		p = p[:i]
+	}
+	return strings.TrimSuffix(strings.TrimSpace(p), "*")
+}
+
+// onInternet reports whether a device value is the internet port or rides on it: one of the
+// ports, an alias of wan or wan6 (`@wan`), or a VLAN of one of them (`wan.10`).
+func onInternet(v string, ports map[string]bool) bool {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return false
+	}
+	if v == "@wan" || v == "@wan6" || ports[v] {
+		return true
+	}
+	for p := range ports {
+		if strings.HasPrefix(v, p+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// zoneDeviceCovers reports whether an entry of a zone's device list takes the internet port: the
+// port itself or what rides on it, a `+` pattern that covers it, or a negation, which takes every
+// device but one.
+func zoneDeviceCovers(d string, ports map[string]bool) bool {
+	d = strings.TrimSpace(d)
+	switch {
+	case d == "":
+		return false
+	case strings.HasPrefix(d, "!") || strings.ContainsAny(d, "*?["):
+		return true
+	case strings.HasSuffix(d, "+"):
+		pre := strings.TrimSuffix(d, "+")
+		for p := range ports {
+			if strings.HasPrefix(p, pre) {
+				return true
+			}
+		}
+		return strings.HasPrefix("@wan", pre)
+	}
+	return onInternet(d, ports)
 }
 
 // sectionChanges reports, by label, the sections pick selects that were added, removed or changed
