@@ -41,6 +41,18 @@ before the 2026-10-17 security wave, so the numbering starts here.
    test: `TestWgNewClientKeepsThePrivateKeyOutOfEveryCommandLine`,
    `TestWgNewClientRefusesAValueThatCannotBeQuotedForUci`)
 
+5. **A high-impact change of a client with an approval section is held for its approver, and runs
+   only as approved.** The classifier reads the state the change would leave (classify.go), before
+   the window is asked; a held record is immutable but for its status and is hashed over its id,
+   client, tool, normalised input, card, fingerprint and times; an approval comes only from the
+   approver, with the approval's factors, against the whole hash, on unchanged configs, with no
+   apply pending, and spends the code's step without opening the window; what only a person may
+   do is refused whatever the grants; the client never opens its own window.
+   `@decided 2026-10-22`: the owner's design, paraphrased in approval.go's header.
+   (test: `features/approval.feature`, every scenario bound; mutants: `scripts/mutate-held.py`, 55,
+   each caught by the test named beside it; real uci: `scripts/test-real-uci.sh`
+   `TestRealUCIClassification`, in OpenWrt's rootfs in CI's apk job)
+
 Each invariant is restated as scenarios in `features/`: `exec-argument-grants.feature`,
 `ubus-call-grants.feature`, `audit-keeps-secrets-out.feature` and `wireguard-key-off-argv.feature`.
 Every scenario is bound to a named test, and `scripts/gate-scenarios-bound.sh` checks the binding
@@ -59,6 +71,8 @@ GOTOOLCHAIN=local go vet ./... && GOTOOLCHAIN=local go test ./... -count=1
 ./scripts/gate-scenarios-bound.sh
 ./scripts/gate-scenarios-bound-teeth.sh
 ./scripts/gate-wg-key-off-argv.sh && ./scripts/gate-wg-key-off-argv-teeth.sh
+python3 scripts/mutate-held.py
+./scripts/test-real-uci.sh   # needs docker
 ```
 
 `scripts/gate-apk-parity.sh` needs docker and runs in CI's `apk` job only.

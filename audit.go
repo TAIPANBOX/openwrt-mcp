@@ -147,6 +147,9 @@ const (
 	OutcomeOK     Outcome = "OK"
 	OutcomeDenied Outcome = "DENIED" // first-class: "we said no" is not the same as "it broke"
 	OutcomeError  Outcome = "ERROR"
+	// HELD: the call was authorised and is high-impact, so it was kept for the owner's approval
+	// instead of being run (approval.go). Neither a yes nor a no yet.
+	OutcomeHeld Outcome = "HELD"
 )
 
 type AuditEvent struct {

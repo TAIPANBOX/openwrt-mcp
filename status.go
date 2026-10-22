@@ -56,6 +56,11 @@ func capabilities() map[string]bool {
 		// nowhere else: never a URL, a local file, a custom feed or a mirror, never with
 		// signature checks off, and only for a client a policy grants it to (apk_add.go).
 		"apk_add_official_feed_only": true,
+		// A client with an approval section has its high-impact changes held for its approver,
+		// who approves each one with fresh factors against the hash of its card; what only a
+		// person may do is refused; and only the approver opens that client's window
+		// (approval.go, classify.go).
+		"actions_held_for_approval": true,
 	}
 }
 
@@ -65,6 +70,18 @@ type clientReport struct {
 	// credential material; neither belongs in a browser.
 	Policies int       `json:"policies"`
 	MFA      mfaReport `json:"mfa"`
+	// Approval is the client's approval section, when it has one: facts only.
+	Approval *approvalReport `json:"approval,omitempty"`
+}
+
+// approvalReport is what a status pane shows of a client's approval section. Ready says whether
+// a held change of this client could be approved now: approvals on, the approver paired, and the
+// factors the approval asks for set up.
+type approvalReport struct {
+	Approver string `json:"approver"`
+	Factor   string `json:"factor"`
+	On       bool   `json:"on"`
+	Ready    bool   `json:"ready"`
 }
 
 // mfaReport is the owner-unlock picture of one client. It holds facts and times only: never a
@@ -176,9 +193,13 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 		names := ts.Clients()
 		sort.Strings(names)
 		for _, n := range names {
-			rep.Clients = append(rep.Clients, clientReport{
-				Name: n, Policies: perClient[n], MFA: buildMFAReport(ms, cfg, n, now, false),
-			})
+			cr := clientReport{Name: n, Policies: perClient[n], MFA: buildMFAReport(ms, cfg, n, now, false)}
+			if a := cfg.approvalFor(n); a != nil {
+				ready := a.On && contains(names, a.Approver) && cr.MFA.TOTPEnrolled &&
+					(a.Factor != factorPINTOTP || cr.MFA.PINSet)
+				cr.Approval = &approvalReport{Approver: a.Approver, Factor: a.Factor, On: a.On, Ready: ready}
+			}
+			rep.Clients = append(rep.Clients, cr)
 		}
 	}
 

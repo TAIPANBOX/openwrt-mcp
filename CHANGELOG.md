@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.5.0-taipanbox.5 (binary version 0.5.0.5)
+
+**High-impact changes wait for the owner's approval, one change at a time.** For a client with an
+approval section, a change that opens the router to the internet, weakens the firewall, changes
+VPN or policy routing, DNS or the time servers, opens Wi-Fi without a password into a trusted
+network, stops a guard service or reboots the router is held instead of run, inside an unlock
+window or out of one, and runs once its approver approves it with a PIN and a code against the
+hash of its card.
+
+### Added
+
+- `config approval`: per client, the approver's client, the factor (`pin+totp` by default, or
+  `totp`), how long a held change waits, and the limits on proposing (one at a time, six an hour,
+  a pause of an hour after three rejections). `list hold` and `list refuse` add rules.
+- Policy options `approval` (the section must exist and be the client's) and `hold '1'`.
+- Tools `action_status` and `action_withdraw` for the client, `action_list`, `action_approve` and
+  `action_reject` for the approver; `mfa_unlock {client}` and `mfa_lock {client}` for the approver.
+- A classifier that reads the state a `uci_apply` would leave (the router's own uci on a RAM copy
+  of the configs), and `rc.init` and `system.reboot` over ubus.
+- `MFAStore.Verify`: the factors checked, a failure counted and the TOTP step spent, with no window.
+- Keywords are decided on trimmed and in any case, and a value the classifier does not know counts
+  as the one that opens; `masq` is read as a boolean; an approved apply checks the configs again as
+  its last step before staging; an answered `action_list`, the approver's poll, writes no audit line.
+- How the router is wired is held whatever it wires to: any change to a `bridge-vlan`,
+  `switch_vlan` or `switch_port` section, to a device's `ports` or `ifname` (one added or removed
+  included), or to what an interface sits on, except an interface put on a new port-less bridge
+  named `br-<name>` that the kernel does not have yet (a guest network). A zone that takes a
+  `device` or a `subnet` faces the internet, and any change to what it takes, or to a raw nftables
+  fragment (`extra`, `extra_src`, `extra_dest`), is held, and so is a network on the internet side
+  put into a zone that does not face it. Routes and routing rules are read trimmed.
+- Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
+  approval facts (approver, factor, on, ready).
+
+### Changed
+
+- A client with an approval section cannot open its own window (`mfa_unlock` refuses without
+  counting a try), and is refused `exec`, `wg_new_client`, changes to the agent's and this daemon's
+  own configs and the ways into the router, and `file.*`, `system.sysupgrade`, `system.signal`,
+  `service.*`, `uci.*` and `rpc-sys.*` over ubus, whatever its grants say. A client without an
+  approval section works exactly as before.
+- A policy with `hold '1'` grants only `uci_apply` and `ubus_call`, the tools an approval can run;
+  one that also grants another tool (`uci_confirm`, `uci_get`) stops the configuration loading,
+  and a `list hold` rule naming `apk_add` does too.
+
 ## v0.5.0-taipanbox.4 (binary version 0.5.0.4)
 
 **`apk_add` installs packages from the official OpenWrt feeds, and from nowhere else.** An

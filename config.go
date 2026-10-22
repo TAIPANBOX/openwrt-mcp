@@ -129,6 +129,15 @@ type Policy struct {
 	MFAMaxFailures int
 	MFALockout     time.Duration
 
+	// Approval names the client's approval section (approval.go). It adds nothing by itself: a
+	// client's change calls are classified whenever the client has one. Naming it here makes a
+	// policy that expects the section fail to load without it, rather than run unclassified.
+	Approval string
+	// Hold makes every call this policy grants wait for the owner's approval, whatever the
+	// classifier says: a reboot, say, which no rollback can undo. Only for a client with an
+	// approval section.
+	Hold bool
+
 	mu   sync.Mutex
 	hits []time.Time // rolling 60s window; process-scoped by design (see README)
 }
@@ -138,6 +147,8 @@ type Config struct {
 	AuditPath  string
 	AuditMaxMB int
 	Policies   []*Policy
+	// Approvals is each client's approval section, by client name (approval.go).
+	Approvals map[string]*Approval
 }
 
 const (
@@ -147,7 +158,8 @@ const (
 )
 
 func LoadConfig(configPath string) (*Config, error) {
-	c := &Config{Listen: defaultListen, AuditPath: defaultAuditPath, AuditMaxMB: defaultAuditMaxMB}
+	c := &Config{Listen: defaultListen, AuditPath: defaultAuditPath, AuditMaxMB: defaultAuditMaxMB,
+		Approvals: map[string]*Approval{}}
 	f, err := os.Open(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -157,8 +169,21 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	defer f.Close()
 
+	byName := map[string]*Approval{}
 	for _, s := range parseUCI(bufio.NewScanner(f)) {
 		switch s.Type {
+		case "approval":
+			a, err := approvalFromSection(s)
+			if err != nil {
+				return nil, fmt.Errorf("approval %q: %w", s.Name, err)
+			}
+			if _, twice := c.Approvals[a.Client]; twice {
+				return nil, fmt.Errorf("approval %q: client %q already has an approval section; one per client", s.Name, a.Client)
+			}
+			c.Approvals[a.Client] = a
+			if a.Name != "" {
+				byName[a.Name] = a
+			}
 		case "server":
 			if v := s.Options["listen"]; v != "" {
 				c.Listen = v
@@ -179,6 +204,27 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 	if err := checkUnlockAgreement(c.Policies); err != nil {
 		return nil, err
+	}
+	for _, p := range c.Policies {
+		if p.Approval != "" {
+			a, ok := byName[p.Approval]
+			if !ok {
+				return nil, fmt.Errorf("a policy for %q names approval section %q, which does not exist", p.Client, p.Approval)
+			}
+			if a.Client != p.Client {
+				return nil, fmt.Errorf("a policy for %q names approval section %q, which is %q's", p.Client, p.Approval, a.Client)
+			}
+		}
+		if p.Hold && c.Approvals[p.Client] == nil {
+			return nil, fmt.Errorf("a policy for %q holds what it grants for approval, but %q has no approval section", p.Client, p.Client)
+		}
+		if p.Hold {
+			for _, t := range p.Tools {
+				if !heldTools[t] {
+					return nil, fmt.Errorf("a policy for %q holds %s for approval, which an approval cannot run; a hold policy grants uci_apply or ubus_call", p.Client, t)
+				}
+			}
+		}
 	}
 	return c, nil
 }
@@ -315,6 +361,14 @@ func policyFromSection(s uciSection) (*Policy, error) {
 		}
 		p.MFALockout = d
 	}
+	p.Approval = strings.TrimSpace(s.Options["approval"])
+	switch v := strings.TrimSpace(s.Options["hold"]); v {
+	case "", "0":
+	case "1":
+		p.Hold = true
+	default:
+		return nil, fmt.Errorf("bad 'hold' %q: want 1 or 0", v)
+	}
 	return p, nil
 }
 
@@ -336,6 +390,32 @@ func (p *Policy) NeedsMFA(tool string) bool {
 // rather than collected across several.
 //
 // One rate token is consumed per authorised call, not per scope.
+// approvalFor is the client's approval section, or nil.
+func (c *Config) approvalFor(client string) *Approval {
+	if c == nil {
+		return nil
+	}
+	return c.Approvals[client]
+}
+
+// approves reports whether approver is the client's approver.
+func (c *Config) approves(approver, client string) bool {
+	a := c.approvalFor(client)
+	return a != nil && a.Approver == approver && approver != ""
+}
+
+// approvedBy lists the clients approver approves, sorted.
+func (c *Config) approvedBy(approver string) []string {
+	var out []string
+	for client, a := range c.Approvals {
+		if a.Approver == approver {
+			out = append(out, client)
+		}
+	}
+	sortStrings(out)
+	return out
+}
+
 func (c *Config) Authorise(client, tool string, scopes []string, now time.Time) (bool, string) {
 	p, reason := c.AuthorisePolicy(client, tool, scopes, now)
 	return p != nil, reason
