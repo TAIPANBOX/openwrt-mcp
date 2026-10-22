@@ -799,6 +799,16 @@ func firewallWeakened(before, after states) []string {
 	return out
 }
 
+// netdevExists reports whether the kernel already has a network device by this name, which a
+// device section of that name would then configure rather than create.
+var netdevExists = func(name string) bool {
+	if name == "" || strings.ContainsAny(name, "/\x00") {
+		return true
+	}
+	_, err := os.Lstat(filepath.Join("/sys/class/net", name))
+	return err == nil
+}
+
 // rewiring holds a change to how the router is wired, whatever it wires to. Which port ends up
 // carrying the internet is netifd's to resolve, through bridges, bridge and switch VLANs, aliases,
 // devices stacked on others and a protocol's own device, and following every way it does that

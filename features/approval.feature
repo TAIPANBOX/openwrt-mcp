@@ -43,7 +43,7 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
   Scenario: an ordinary change still runs in the window
     Given the client's unlock window is open
     When it changes the router's description, adds a static lease, or restarts a service
-    Or it sets up a guest network: a bridge with no ports, an interface on it, a Wi-Fi with a password on that network
+    Or it sets up a guest network: a new br- bridge with no ports, an interface on it, a Wi-Fi with a password on that network, its own zone
     Then the change is applied as before, with the rollback armed
 
   # bound to: TestSplitRedirectHeldOnSecondCall, TestWanPortIntoLanBridgeHeld, TestZoneRenameHeld
@@ -53,6 +53,7 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     Or the internet port is added to the LAN bridge
     Or the router is rewired: a VLAN table, the ports or base of a device, or what an interface sits on
     Or a zone takes a device or a subnet, or a raw nftables fragment is set anywhere in the firewall
+    Or a network on the internet side is put into a zone that does not face the internet
     Or the LAN zone is renamed so that it becomes an internet zone
     Then the call that completes it is held
     And a keyword is read trimmed and in any case, and a value nobody knows reads as the one that opens

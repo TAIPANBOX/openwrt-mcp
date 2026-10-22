@@ -309,6 +309,12 @@ func TestRewiringIsHeld(t *testing.T) {
 	wildcard := replaceLine(fw, "firewall.guest.network='guest'", "firewall.guest.network='guest'\nfirewall.guest.device='wa+'")
 	guest := apNetwork + "network.bg=device\nnetwork.bg.type='bridge'\nnetwork.bg.name='br-iot'\n" +
 		"network.iot=interface\nnetwork.iot.device='br-iot'\nnetwork.iot.proto='static'\nnetwork.iot.ipaddr='192.168.7.1'\n"
+	wwanFw := replaceLine(fw, "firewall.cfg03dc81.network='wan' 'wan6'", "firewall.cfg03dc81.network='wan' 'wan6' 'wwan'")
+	wwanNet := apNetwork + "network.wwan=interface\nnetwork.wwan.proto='dhcp'\n"
+	tunLan := replaceLine(fw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan'\nfirewall.cfg02dc81.device='tun+'")
+	was := netdevExists
+	netdevExists = func(name string) bool { return name == "br-wan" }
+	t.Cleanup(func() { netdevExists = was })
 	type cfg struct{ network, firewall, wireless string }
 	run := func(b, a cfg) string {
 		t.Helper()
@@ -374,6 +380,20 @@ func TestRewiringIsHeld(t *testing.T) {
 			cfg{network: apNetwork + "network.bv=device\nnetwork.bv.type='veth'\nnetwork.bv.name='br-v'\n" +
 				"network.x=interface\nnetwork.x.device='br-v'\nnetwork.x.proto='static'\n"},
 			"REWIRES THE NETWORK: interface 'x' sits on none -> 'br-v'"},
+		{"an interface on a new br- bridge the kernel already has", cfg{},
+			cfg{network: apNetwork + "network.bw=device\nnetwork.bw.type='bridge'\nnetwork.bw.name='br-wan'\n" +
+				"network.x=interface\nnetwork.x.device='br-wan'\nnetwork.x.proto='static'\n"},
+			"REWIRES THE NETWORK: interface 'x' sits on none -> 'br-wan'"},
+		{"an uplink network moved into the LAN zone", cfg{network: wwanNet, firewall: wwanFw},
+			cfg{network: wwanNet, firewall: replaceLine(replaceLine(fw, "firewall.cfg03dc81.network='wan' 'wan6'", "firewall.cfg03dc81.network='wan' 'wan6'"),
+				"firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan' 'wwan'")},
+			"WEAKENS THE FIREWALL: network 'wwan' joins zone 'lan'"},
+		{"an uplink network added to the LAN zone as well", cfg{network: wwanNet, firewall: wwanFw},
+			cfg{network: wwanNet, firewall: replaceLine(wwanFw, "firewall.cfg02dc81.network='lan'", "firewall.cfg02dc81.network='lan' 'wwan'")},
+			"WEAKENS THE FIREWALL: network 'wwan' joins zone 'lan'"},
+		{"an open Wi-Fi into a trusted zone that also takes a device", cfg{firewall: tunLan},
+			cfg{firewall: tunLan, wireless: replaceLine(apWireless, "default_radio0.encryption='sae-mixed'", "default_radio0.encryption='none'")},
+			"OPENS WI-FI WITHOUT A PASSWORD INTO A TRUSTED NETWORK: 'Home'"},
 		{"a device removed", cfg{},
 			cfg{network: replaceLine(replaceLine(replaceLine(replaceLine(apNetwork, "network.cfg030f15=device\n", ""),
 				"network.cfg030f15.name='br-lan'\n", ""), "network.cfg030f15.type='bridge'\n", ""), "network.cfg030f15.ports='lan1' 'lan2' 'lan3'\n", "")},
@@ -415,7 +435,9 @@ func TestRewiringIsHeld(t *testing.T) {
 		name          string
 		before, after cfg
 	}{
-		{"a guest network made in one change", cfg{}, cfg{network: guest, wireless: wifiGuest}},
+		{"a guest network made in one change", cfg{}, cfg{network: guest, wireless: wifiGuest, firewall: fw +
+			"firewall.iz=zone\nfirewall.iz.name='iot'\nfirewall.iz.network='iot'\nfirewall.iz.input='REJECT'\nfirewall.iz.forward='REJECT'\n" +
+			"firewall.if=forwarding\nfirewall.if.src='iot'\nfirewall.if.dest='wan'\n"}},
 		{"an interface's own address", cfg{}, cfg{network: replaceLine(apNetwork, "network.lan.ipaddr='192.168.1.1'", "network.lan.ipaddr='192.168.2.1'")}},
 		{"a device's MTU", cfg{}, cfg{network: replaceLine(apNetwork, "network.cfg030f15.type='bridge'", "network.cfg030f15.type='bridge'\nnetwork.cfg030f15.mtu='1500'")}},
 		{"an interface with no device", cfg{}, cfg{network: apNetwork + "network.y=interface\nnetwork.y.proto='static'\nnetwork.y.ipaddr='10.9.9.1'\n"}},
