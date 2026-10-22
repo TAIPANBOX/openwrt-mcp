@@ -302,6 +302,19 @@ func TestAnUnconfirmedApplyRollsItselfBackWhenTheTimerFires(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	// And for the rollback's last write, its audit line, which comes after the pending record is
+	// saved: until then the timer's goroutine still writes in the state directory, and a test that
+	// returned earlier raced its own cleanup ("directory not empty", CI run 39811546571).
+	for {
+		b, _ := os.ReadFile(filepath.Join(r.stateDir, "audit.jsonl"))
+		if strings.Contains(string(b), `"uci_rollback"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the timer rollback never wrote its audit line")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // -------------------------------------------------------------------- status and audit
