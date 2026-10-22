@@ -785,12 +785,25 @@ func firewallWeakened(before, after states) []string {
 			showList(bp), showList(ap)))
 	}
 	wanDevs := dedupe(sortStrs(append(append([]string(nil), bp...), ap...)))
-	joins := func(st states) map[string]string {
+	joins := func(st states, m fwModel) map[string]string {
 		got := map[string]string{}
 		net := st.get("network")
 		on := map[string]bool{}
 		for _, p := range wanDevs {
 			on[p] = true
+		}
+		// The interfaces on the internet side: wan, wan6 and every network an internet-facing zone
+		// lists. Those are the internet itself, not joins. An interface on top of one of them, or on
+		// the internet port, joins it, and is then the internet for what is built on it in turn.
+		side := map[string]bool{"wan": true, "wan6": true}
+		for n, z := range m.zoneNets {
+			if m.wanZones[z] {
+				side[n] = true
+			}
+		}
+		inet := map[string]bool{}
+		for n := range side {
+			inet[n] = true
 		}
 		// A device on top of the internet port (a macvlan, a VLAN device: its ifname) carries the
 		// internet port's traffic too, so what joins it joins the internet port. A bridge does not
@@ -804,7 +817,7 @@ func firewallWeakened(before, after states) []string {
 				}
 				for _, k := range []string{"ports", "ifname"} {
 					for _, p := range d.list(k) {
-						if !onInternet(p, on) {
+						if !onInternet(p, on, inet) {
 							continue
 						}
 						got[p+"\x00"+name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins %s",
@@ -816,24 +829,28 @@ func firewallWeakened(before, after states) []string {
 					}
 				}
 			}
-		}
-		for _, i := range net.sectionsOf("interface") {
-			if i.Name == "wan" || i.Name == "wan6" {
-				continue
-			}
-			for _, k := range []string{"device", "ifname"} {
-				for _, p := range i.list(k) {
-					if onInternet(p, on) {
-						got[p+"\x00if:"+i.Name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins interface %s",
-							showValue(p), showValue(i.label()))
+			for _, i := range net.sectionsOf("interface") {
+				for _, k := range []string{"device", "ifname"} {
+					for _, p := range i.list(k) {
+						if !onInternet(p, on, inet) {
+							continue
+						}
+						if !side[i.Name] {
+							got[p+"\x00if:"+i.Name] = fmt.Sprintf("WEAKENS THE FIREWALL: the internet port %s joins interface %s",
+								showValue(p), showValue(i.label()))
+						}
+						if !inet[i.Name] {
+							inet[i.Name] = true
+							grew = true
+						}
 					}
 				}
 			}
 		}
 		return got
 	}
-	was = joins(before)
-	for k, h := range joins(after) {
+	was = joins(before, b)
+	for k, h := range joins(after, a) {
 		if _, ok := was[k]; !ok {
 			out = append(out, h)
 		}
@@ -930,6 +947,11 @@ func internetPort(st states) (ports, shape []string) {
 				wanSw = all
 			}
 		}
+		// A VLAN of a plain port, which no bridge-vlan or switch VLAN describes: the port itself
+		// carries the internet, untagged frames included.
+		if len(wanBr) == 0 && len(wanSw) == 0 {
+			add(wd+".base", base)
+		}
 		for _, w := range wanSw {
 			for _, v := range net.sectionsOf("switch_vlan") {
 				for _, p := range v.list("ports") {
@@ -962,13 +984,20 @@ func vlanPort(p string) string {
 }
 
 // onInternet reports whether a device value is the internet port or rides on it: one of the
-// ports, an alias of wan or wan6 (`@wan`), or a VLAN of one of them (`wan.10`).
-func onInternet(v string, ports map[string]bool) bool {
+// ports, a VLAN of one of them (`wan.10`), an alias of an interface on the internet side (`@wan`),
+// or the device a protocol makes for one (`pppoe-wan`, `3g-wan`).
+func onInternet(v string, ports, ifaces map[string]bool) bool {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return false
 	}
-	if v == "@wan" || v == "@wan6" || ports[v] {
+	if strings.HasPrefix(v, "@") {
+		return ifaces[v[1:]]
+	}
+	if i := strings.LastIndexByte(v, '-'); i > 0 && ifaces[v[i+1:]] {
+		return true
+	}
+	if ports[v] {
 		return true
 	}
 	for p := range ports {
@@ -996,9 +1025,9 @@ func zoneDeviceCovers(d string, ports map[string]bool) bool {
 				return true
 			}
 		}
-		return strings.HasPrefix("@wan", pre)
+		return strings.HasPrefix("@wan", pre) || strings.HasPrefix("pppoe-wan", pre)
 	}
-	return onInternet(d, ports)
+	return onInternet(d, ports, map[string]bool{"wan": true, "wan6": true})
 }
 
 // sectionChanges reports, by label, the sections pick selects that were added, removed or changed

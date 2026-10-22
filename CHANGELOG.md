@@ -27,7 +27,9 @@ hash of its card.
   or to the ports of a device section they name, so one call cannot point wan elsewhere and the
   next put the old port into the LAN bridge. For a VLAN of a bridge or a switch, the VLAN's members
   and every other VLAN that carries its ports count too. A device on top of the internet port (an
-  alias `@wan`, a VLAN `wan.10`, a macvlan) is the internet port for what joins it, a zone that
+  alias of an interface on the internet side, a VLAN `wan.10`, a macvlan, a protocol's device such
+  as `pppoe-wan`) is the internet port for what joins it, an interface the internet zone lists is
+  the internet side and not a join, a VLAN of a plain port counts as that port, a zone that
   takes the internet port by `device` faces the internet, and any change to what a zone takes by
   `device` or `subnet` is held. Routes and routing rules are read trimmed.
 - Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
