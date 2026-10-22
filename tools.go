@@ -335,11 +335,14 @@ type execIn struct {
 	Timeout int      `json:"timeout,omitempty" jsonschema:"seconds before the command is killed (default 30, max 300)"`
 }
 
-type mfaLockIn struct{}
+type mfaLockIn struct {
+	Client string `json:"client,omitempty" jsonschema:"for the owner's client only: the client whose window to close; its held changes are rejected too. Omit to close your own window."`
+}
 
 type mfaUnlockIn struct {
-	Code string `json:"code,omitempty" jsonschema:"the current 6-digit code from the operator's authenticator app; send it when the policy asks for a code"`
-	PIN  string `json:"pin,omitempty" jsonschema:"the operator's PIN; send it when the policy asks for a PIN"`
+	Client string `json:"client,omitempty" jsonschema:"for the owner's client only: the client whose window to open. Omit to open your own."`
+	Code   string `json:"code,omitempty" jsonschema:"the current 6-digit code from the operator's authenticator app; send it when the policy asks for a code"`
+	PIN    string `json:"pin,omitempty" jsonschema:"the operator's PIN; send it when the policy asks for a PIN"`
 }
 
 type logreadIn struct {
@@ -377,7 +380,7 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 		ubusCallShape,
 		ubusCall)
 
-	addTool(s, srv, client, "uci_apply",
+	addToolShaped(s, srv, client, "uci_apply",
 		"Change router configuration safely. Stages the given UCI changes, commits them, and applies "+
 			"with a rollback timer armed: if uci_confirm is not called before the timeout, the router "+
 			"automatically reverts everything. Use this rather than 'uci' via exec -- it is the only path "+
@@ -390,16 +393,19 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"Changes run in order, so the creating change must come first. Omit 'option' with "+
 			"'delete' to remove a whole section.\n\n"+
 			"Policy scope is \"<config>.<section>.<option>\", or \"<config>.<section>\" for a "+
-			"section-level change; all must be covered by one policy.",
-		uciScopes,
+			"section-level change; all must be covered by one policy.\n\n"+
+			"A change that opens the router to the internet, weakens the firewall, changes VPN routing, "+
+			"DNS or the time servers, or opens a Wi-Fi without a password into a trusted network may answer "+
+			"HELD <id>: it then waits for the owner's approval and nothing was applied. Do not retry it.",
+		uciApplyShape,
 		func(ctx context.Context, in uciApplyIn) (string, string, error) {
 			return s.uciApply(ctx, in)
 		})
 
-	addTool(s, srv, client, "uci_confirm",
+	addToolShaped(s, srv, client, "uci_confirm",
 		"Confirm a pending uci_apply and cancel its rollback timer. Call this only after verifying the "+
 			"router is still reachable and behaving. Doing nothing is the safe default: the change reverts.",
-		func(in uciConfirmIn) []string { return nil },
+		func(in uciConfirmIn) callShape { return callShape{confirmToken: in.Token} },
 		func(ctx context.Context, in uciConfirmIn) (string, string, error) {
 			return s.uciConfirm(ctx, in.Token)
 		})
@@ -465,14 +471,22 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"'openwrt-mcp mfa enrol' or 'openwrt-mcp pin set'.",
 		func(in mfaUnlockIn) []string { return nil },
 		func(ctx context.Context, in mfaUnlockIn) (string, string, error) {
-			up := s.unlockPolicyFor(client)
-			until, err := s.mfa.Attempt(client, unlockAttempt{Code: in.Code, PIN: in.PIN}, up, time.Now())
+			target, err := s.unlockTarget(client, in.Client)
 			if err != nil {
-				// Returned as an error so it audits as ERROR, distinct from a policy DENIED.
 				return "", "mfa_unlock", err
 			}
+			up := s.unlockPolicyFor(target)
+			until, err := s.mfa.Attempt(target, unlockAttempt{Code: in.Code, PIN: in.PIN}, up, time.Now())
+			summary := "mfa_unlock"
+			if target != client {
+				summary += " for " + target
+			}
+			if err != nil {
+				// Returned as an error so it audits as ERROR, distinct from a policy DENIED.
+				return "", summary, err
+			}
 			return fmt.Sprintf("Unlocked until %s (%s).", until.Format(time.RFC3339), up.Window),
-				"mfa_unlock", nil
+				summary, nil
 		})
 
 	addTool(s, srv, client, "mfa_lock",
@@ -481,6 +495,19 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"access, so it needs no grant.",
 		func(in mfaLockIn) []string { return nil },
 		func(ctx context.Context, in mfaLockIn) (string, string, error) {
+			if in.Client != "" && in.Client != client {
+				if !s.cfg().approves(client, in.Client) {
+					return "", "mfa_lock", &refusedError{"refused: only the owner's client of " + in.Client + " closes its window"}
+				}
+				was := s.mfa.Lock(in.Client)
+				n := s.rejectAll(in.Client)
+				state := "was not open"
+				if was {
+					state = "is closed"
+				}
+				return fmt.Sprintf("Locked. The unlock window for %s %s, and %d held change(s) of it were rejected.",
+					in.Client, state, n), fmt.Sprintf("mfa_lock for %s, %d held rejected", in.Client, n), nil
+			}
 			if s.mfa.Lock(client) {
 				return "Locked. The unlock window for " + client + " is closed; gated tools need " +
 					"the second factor again.", "mfa_lock", nil
@@ -488,6 +515,40 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			return "Already locked: " + client + " was not unlocked, so there was nothing to close.",
 				"mfa_lock", nil
 		})
+
+	addTool(s, srv, client, "action_status",
+		"Read how your changes that were HELD for the owner's approval stand: held, applied, failed, "+
+			"rejected, expired or withdrawn, with the outcome of one that ran. An applied uci_apply names its "+
+			"uci_confirm token: check the router, then confirm it, as after any apply. Needs no grant.",
+		func(in actionStatusIn) []string { return nil },
+		func(ctx context.Context, in actionStatusIn) (string, string, error) { return s.actionStatus(client) })
+
+	addTool(s, srv, client, "action_withdraw",
+		"Withdraw one of your changes that is still HELD, so it no longer waits for the owner. It only ever "+
+			"removes, so it needs no grant.",
+		func(in actionIDIn) []string { return nil },
+		func(ctx context.Context, in actionIDIn) (string, string, error) {
+			return s.actionWithdraw(client, in.ID)
+		})
+
+	addTool(s, srv, client, "action_list",
+		"For the owner's client only: the held changes of the clients it approves, each with its card and hash.",
+		func(in actionStatusIn) []string { return nil },
+		func(ctx context.Context, in actionStatusIn) (string, string, error) { return s.actionList(client) })
+
+	addTool(s, srv, client, "action_approve",
+		"For the owner's client only: approve one held change by its id and the hash of its card, with the "+
+			"owner's PIN and a current code. The change runs once, exactly as held; an approval never opens "+
+			"the unlock window.",
+		func(in actionApproveIn) []string { return nil },
+		func(ctx context.Context, in actionApproveIn) (string, string, error) {
+			return s.actionApprove(ctx, client, in)
+		})
+
+	addTool(s, srv, client, "action_reject",
+		"For the owner's client only: reject one held change. Takes no factor.",
+		func(in actionIDIn) []string { return nil },
+		func(ctx context.Context, in actionIDIn) (string, string, error) { return s.actionReject(client, in.ID) })
 
 	addTool(s, srv, client, "logread",
 		"Read the router's system log. Separate from exec so a policy can grant log access without "+
@@ -534,6 +595,19 @@ type callShape struct {
 	scopes  []string
 	argv    []string
 	refusal string
+	// For a client with an approval section (approval.go): the input as it would be held, and how
+	// the call is classified. classify is nil for a tool whose calls are never held by themselves.
+	input    any
+	classify func(context.Context) classification
+	// uci_confirm's token, so a change the owner approved can be confirmed without an unlock.
+	confirmToken string
+}
+
+// uciApplyShape scopes an apply as uciScopes does, and classifies it by the state it would leave.
+func uciApplyShape(in uciApplyIn) callShape {
+	held := uciApplyIn{Changes: in.Changes}
+	return callShape{scopes: uciScopes(in), input: held,
+		classify: func(ctx context.Context) classification { return classifyUCI(ctx, held) }}
 }
 
 // ubusCallShape refuses an object or method that is not a plain ubus name before any grant is
@@ -546,7 +620,12 @@ func ubusCallShape(in ubusCallIn) callShape {
 				"dashes and underscores, a method the same without dots, and neither begins with a dash",
 			in.Object, in.Method)}
 	}
-	return callShape{scopes: []string{in.Object + "." + in.Method}}
+	return callShape{scopes: []string{in.Object + "." + in.Method}, input: in,
+		classify: func(context.Context) classification {
+			cl := classifyUbus(in)
+			cl.diff = ubusBody(in)
+			return cl
+		}}
 }
 
 // execShape scopes exec on argv[0] and carries the whole argument vector to the policy, which
@@ -556,6 +635,27 @@ func execShape(in execIn) callShape {
 		return callShape{refusal: "denied: argv must not be empty"}
 	}
 	return callShape{scopes: []string{in.Argv[0]}, argv: in.Argv}
+}
+
+// ungated are the tools no policy grant is asked for (see addToolShaped).
+var ungated = map[string]bool{"ubus_list": true, "mfa_unlock": true, "mfa_lock": true, "action_status": true,
+	"action_withdraw": true, "action_list": true, "action_approve": true, "action_reject": true}
+
+// unlockTarget is whose window an mfa_unlock from caller opens: its own, or, for the owner's
+// client, the client named. A client with an approval section never opens its own: its approver
+// does, so the agent cannot spend the owner's tries on guesses.
+func (s *Server) unlockTarget(caller, named string) (string, error) {
+	if named != "" && named != caller {
+		if !s.cfg().approves(caller, named) {
+			return "", &refusedError{"refused: only the owner's client of " + named + " opens its window"}
+		}
+		return named, nil
+	}
+	if a := s.cfg().approvalFor(caller); a != nil {
+		return "", &refusedError{"refused: " + caller + "'s window is opened by the owner's client (" + a.Approver +
+			"), never by " + caller + " itself; ask the owner to unlock in the chat. Nothing was tried."}
+	}
+	return caller, nil
 }
 
 // addTool registers one tool behind the shared policy+audit gate. scopeOf derives the policy
@@ -607,16 +707,48 @@ func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string
 			// to leave open because it grants nothing on its own -- without the right
 			// factors it does nothing but record a failed attempt, and the lockout caps those.
 			// mfa_lock is exempt because it can only remove access, never add it.
-			if name != "ubus_list" && name != "mfa_unlock" && name != "mfa_lock" {
+			//
+			// The action_* tools are exempt too: action_status and action_withdraw only read or
+			// remove the caller's own held changes, and the other three decide who may call them
+			// from the approval sections, not from grants (approval.go).
+			if !ungated[name] {
 				now := time.Now()
 				p, reason := s.cfg().authorise(client, name, shape.scopes, shape.argv, now)
 				if p == nil {
 					return finish(errResult(reason), OutcomeDenied, "", reason)
 				}
+				// A client with an approval section: what only a person may do is refused, and a
+				// high-impact change is held, both before the window is asked, so a window lets
+				// neither through and a closed one does not stop a proposal (classify.go).
+				if a := s.cfg().approvalFor(client); a != nil {
+					if r := humanOnlyRefusal(name, shape.scopes); r != "" {
+						return finish(errResult(r), OutcomeDenied, "", r)
+					}
+					cl := s.classifyCall(ctx, name, shape, p, a)
+					switch cl.tier {
+					case tierRefused:
+						return finish(errResult(cl.refusal), OutcomeDenied, "", cl.refusal)
+					case tierHeld:
+						if why := s.approvalReady(a); why != "" {
+							r := "refused: " + strings.Join(cl.headlines, "; ") + ". A change like this waits for the " +
+								"owner's approval, and " + why + "; nothing was applied."
+							return finish(errResult(r), OutcomeDenied, "", r)
+						}
+						h, refusal := s.hold(client, name, shape.input, shape.scopes, shape.argv, cl, cl.diff, a, now)
+						if h == nil {
+							return finish(errResult(refusal), OutcomeDenied, "", refusal)
+						}
+						return finish(textResult(heldText(h)), OutcomeHeld,
+							"held "+h.ID+" ref "+h.Hash[:8]+": "+strings.Join(h.Headlines, "; "), "")
+					}
+				}
 				// Second factor, checked after authorisation so an unauthorised caller
-				// learns nothing about which tools are MFA-gated.
-				if r := s.mfaGate(p, client, name, now); r != "" {
-					return finish(errResult(r), OutcomeDenied, "", r)
+				// learns nothing about which tools are MFA-gated. A change the owner approved
+				// is confirmed without one: the approval was the owner's consent to it.
+				if name != "uci_confirm" || !s.approvedApply(shape.confirmToken, client) {
+					if r := s.mfaGate(p, client, name, now); r != "" {
+						return finish(errResult(r), OutcomeDenied, "", r)
+					}
 				}
 			}
 

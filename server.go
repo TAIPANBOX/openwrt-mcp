@@ -30,6 +30,7 @@ type Server struct {
 	cfgTime time.Time
 	servers map[string]*mcp.Server // per authenticated client name
 	pending map[string]*pendingApply
+	held    *heldStore // changes waiting for the owner's approval (approval.go)
 }
 
 // cfg returns the current policy set, re-reading the config file when it has changed on
@@ -83,6 +84,7 @@ func NewServer(configPath, statePath string) (*Server, error) {
 		audit:      NewAuditor(cfg.AuditPath, cfg.AuditMaxMB),
 		servers:    map[string]*mcp.Server{},
 		pending:    map[string]*pendingApply{},
+		held:       newHeldStore(),
 	}
 	s.recoverPending()
 	return s, nil
@@ -203,8 +205,19 @@ type pendingApply struct {
 	Snapshot string    `json:"snapshot"`
 	Deadline time.Time `json:"deadline"`
 	Configs  []string  `json:"configs"`
+	// ApprovedFor is the client whose held change this apply is, once the owner approved it. That
+	// client confirms it without an unlock: the approval was the owner's consent to this change.
+	ApprovedFor string `json:"approved_for,omitempty"`
 
 	timer *time.Timer
+}
+
+// approvedApply reports whether token is a pending apply the owner approved for client.
+func (s *Server) approvedApply(token, client string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p := s.pending[token]
+	return p != nil && client != "" && p.ApprovedFor == client
 }
 
 func (s *Server) pendingPath() string { return path.Join(s.statePath, "pending.json") }
@@ -320,6 +333,12 @@ func uciArgv(c UCIChange) []string {
 }
 
 func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, error) {
+	return s.applyUCI(ctx, in, "")
+}
+
+// applyUCI is uci_apply. approvedFor names the client whose held change this is, when the owner
+// approved it (approval.go), and is empty otherwise.
+func (s *Server) applyUCI(ctx context.Context, in uciApplyIn, approvedFor string) (string, string, error) {
 	if len(in.Changes) == 0 {
 		return "", "", fmt.Errorf("changes must not be empty")
 	}
@@ -398,7 +417,8 @@ func (s *Server) uciApply(ctx context.Context, in uciApplyIn) (string, string, e
 	}
 	reloadOut, _ := run(ctx, defaultCmdTimeout, "ubus", "call", "uci", "reload_config", "{}")
 
-	p := &pendingApply{Token: token, Snapshot: snapshot, Deadline: time.Now().Add(timeout), Configs: names}
+	p := &pendingApply{Token: token, Snapshot: snapshot, Deadline: time.Now().Add(timeout), Configs: names,
+		ApprovedFor: approvedFor}
 	s.mu.Lock()
 	p.timer = time.AfterFunc(timeout, func() { s.rollback(token, "timeout") })
 	s.pending[token] = p

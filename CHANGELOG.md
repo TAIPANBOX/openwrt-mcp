@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.5.0-taipanbox.5 (binary version 0.5.0.5)
+
+**High-impact changes wait for the owner's approval, one change at a time.** For a client with an
+approval section, a change that opens the router to the internet, weakens the firewall, changes
+VPN or policy routing, DNS or the time servers, opens Wi-Fi without a password into a trusted
+network, stops a guard service or reboots the router is held instead of run, inside an unlock
+window or out of one, and runs once its approver approves it with a PIN and a code against the
+hash of its card.
+
+### Added
+
+- `config approval`: per client, the approver's client, the factor (`pin+totp` by default, or
+  `totp`), how long a held change waits, and the limits on proposing (one at a time, six an hour,
+  a pause of an hour after three rejections). `list hold` and `list refuse` add rules.
+- Policy options `approval` (the section must exist and be the client's) and `hold '1'`.
+- Tools `action_status` and `action_withdraw` for the client, `action_list`, `action_approve` and
+  `action_reject` for the approver; `mfa_unlock {client}` and `mfa_lock {client}` for the approver.
+- A classifier that reads the state a `uci_apply` would leave (the router's own uci on a RAM copy
+  of the configs), and `rc.init` and `system.reboot` over ubus.
+- `MFAStore.Verify`: the factors checked, a failure counted and the TOTP step spent, with no window.
+- Audit outcome `HELD`; capability `actions_held_for_approval`; `status --json` gives each client's
+  approval facts (approver, factor, on, ready).
+
+### Changed
+
+- A client with an approval section cannot open its own window (`mfa_unlock` refuses without
+  counting a try), and is refused `exec`, `wg_new_client`, changes to the agent's and this daemon's
+  own configs and the ways into the router, and `file.*`, `system.sysupgrade`, `system.signal`,
+  `service.*`, `uci.*` and `rpc-sys.*` over ubus, whatever its grants say. A client without an
+  approval section works exactly as before.
+
 ## v0.5.0-taipanbox.4 (binary version 0.5.0.4)
 
 **`apk_add` installs packages from the official OpenWrt feeds, and from nowhere else.** An

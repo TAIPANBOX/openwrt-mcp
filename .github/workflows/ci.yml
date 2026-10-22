@@ -17,6 +17,9 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test ./... -count=1
+      # Held-action approval is where a wrong answer is silent, so each way of breaking it is
+      # planted and the test named for it must go red (scripts/mutate-held.py lists them).
+      - run: python3 scripts/mutate-held.py
       # The WireGuard private key never reaches a command line, and the gate's own teeth
       # prove the gate would notice if it did.
       - run: ./scripts/gate-wg-key-off-argv.sh && ./scripts/gate-wg-key-off-argv-teeth.sh
@@ -93,6 +96,11 @@ jobs:
       # Cheap, and it fails for a reason a reader can act on, so it goes first.
       - name: every scenario is bound to a check, and back
         run: ./scripts/gate-scenarios-bound.sh
+
+      # The tests answer `uci -X show` from fixtures; this runs the held-action classifier on the
+      # router's own uci, inside the same rootfs, so the state it reads is the state libuci builds.
+      - name: the classifier reads the state OpenWrt's uci builds
+        run: GOARCH=${{ matrix.goarch }} ./scripts/test-real-uci.sh
 
       - name: apk installs the package and leaves the same state opkg does
         run: ./scripts/gate-apk-parity.sh

@@ -549,6 +549,20 @@ var (
 // (two parallel attempts cannot both slip under the failure limit), and it is bounded: a
 // client past its limit is refused before any derivation happens.
 func (m *MFAStore) Attempt(client string, in unlockAttempt, up unlockPolicy, now time.Time) (time.Time, error) {
+	return m.attempt(client, in, up, now, true)
+}
+
+// Verify is Attempt for one decision rather than a window: it checks the factors the policy
+// names, counts a failure against the same budget and honours the same lockout, and spends the
+// TOTP step, so a code that approved one held action neither approves another nor opens the
+// window. It never opens the window, and never extends one that is open: an approval is consent
+// to one change, not to a stretch of time.
+func (m *MFAStore) Verify(client string, in unlockAttempt, up unlockPolicy, now time.Time) error {
+	_, err := m.attempt(client, in, up, now, false)
+	return err
+}
+
+func (m *MFAStore) attempt(client string, in unlockAttempt, up unlockPolicy, now time.Time, open bool) (time.Time, error) {
 	up = up.withDefaults()
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -572,6 +586,9 @@ func (m *MFAStore) Attempt(client string, in unlockAttempt, up unlockPolicy, now
 		return time.Time{}, err
 	}
 	delete(m.fails, client)
+	if !open {
+		return time.Time{}, nil
+	}
 	until := now.Add(up.Window)
 	m.unlocks[client] = until
 	return until, nil

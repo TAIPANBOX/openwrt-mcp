@@ -46,13 +46,14 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     Then the change is applied as before, with the rollback armed
 
   # bound to: TestSplitRedirectHeldOnSecondCall, TestWanPortIntoLanBridgeHeld, TestZoneRenameHeld
+  # bound to: TestPredicatesReadTheState
   Scenario: what decides is the state a change leaves, not the call
     When a port forward from the internet is made disabled in one call and switched on in the next
     Or the internet port is added to the LAN bridge
     Or the LAN zone is renamed so that it becomes an internet zone
     Then the call that completes it is held
 
-  # bound to: TestUnreadableTypeHeld
+  # bound to: TestUnreadableTypeHeld, TestParseShowReadsWhatUciPrints
   Scenario: what cannot be checked waits for the owner
     When the state a change would leave cannot be read
     Then the change is held, and the card says it could not be checked
@@ -64,17 +65,19 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
     And a secret's value is shown as redacted, and what the agent chose is quoted after its key with anything unprintable escaped
     And a card over 3500 characters is refused, never cut short
 
-  # bound to: TestApproveAppliesExactlyTheHeldBatch, TestApproveNeverOpensWindow
+  # bound to: TestApproveAppliesExactlyTheHeldBatch, TestApproveNeverOpensWindow, TestApproveNeedsPINAndCode
+  # bound to: TestConfirmWithoutUnlockOnlyForApprovedChanges
   Scenario: the owner approves with a PIN and a code, and exactly that change runs
-    When the owner's client approves the id and hash with the PIN and a current code
+    When the owner's client approves the id and hash with the PIN and a current code, either alone being refused
     Then the held batch, and nothing else, is applied with a rollback of 300 seconds
-    And the agent reads the outcome and can confirm the change without an unlock
+    And the agent reads the outcome and can confirm the change without an unlock, which a change made in a window cannot
     And the window stays closed, so an ordinary change still needs an unlock
 
-  # bound to: TestApproveRefusesAnotherHash
+  # bound to: TestApproveRefusesAnotherHash, TestHashCoversEveryField
   Scenario: an approval names the exact change it approves
-    When the hash sent with the approval is not the record's
+    When the hash sent with the approval is not the record's whole hash
     Then nothing is applied, and no try is counted
+    And the hash changes with any field of the record: id, client, tool, input, card, fingerprint, times
 
   # bound to: TestAgentClientCannotApprove, TestAgentCannotUnlockItself
   Scenario: only the owner's client approves or unlocks
@@ -85,7 +88,7 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
   # bound to: TestApproveStepSpent
   Scenario: a code approves once
     When a code has been used to approve one change
-    Then the same code does not approve another, nor open the window
+    Then the same code does not approve another
 
   # bound to: TestApproveRefusedAfterDrift, TestApproveRefusedWhileAnApplyAwaitsConfirmation
   Scenario: when the router has changed since, the approval is refused and costs no try
@@ -105,6 +108,11 @@ Feature: a high-impact change waits for the owner's approval, one change at a ti
   # bound to: TestOneOpenPerClient, TestProposalsPerHourAreLimited, TestProposalsPauseAfterRejections
   Scenario: proposals are limited, so a flood of cards cannot wear the owner down
     Then a client has at most one change waiting, at most six proposals an hour, and none for an hour after three rejections in a row
+
+  # bound to: TestHoldPolicyHoldsWhatItGrants, TestApprovalRulesAddHoldsAndRefusals
+  Scenario: the owner can hold or refuse more, never less
+    When a policy says hold, or the approval section lists a hold or a refuse rule
+    Then what it names is held, or refused, on top of the built-in rules
 
   # bound to: TestHumanOnlyRefusedWhateverTheGrant
   Scenario: what only a person may do is refused, whatever a grant says

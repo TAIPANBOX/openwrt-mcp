@@ -1160,14 +1160,14 @@ func TestApprovalConfigIsChecked(t *testing.T) {
 		"a policy names a missing section": policy("\toption approval 'nope'\n"),
 		"a policy names another client's section": "\nconfig approval 'appr'\n\toption client 'b'\n\toption approver 'owner'\n" +
 			policy("\toption approval 'appr'\n"),
-		"no approver":                  "\nconfig approval 'appr'\n\toption client 'a'\n",
-		"the client approves itself":   "\nconfig approval 'appr'\n\toption client 'a'\n\toption approver 'a'\n",
-		"a PIN alone":                  apApproval + "\toption factor 'pin'\n",
-		"no time to approve":           apApproval + "\toption ttl '0s'\n",
-		"max_open of zero":             apApproval + "\toption max_open '0'\n",
-		"approvals neither on nor off": apApproval + "\toption approvals 'maybe'\n",
-		"two sections for one client":  apApproval + "\nconfig approval 'second'\n\toption client 'a'\n\toption approver 'owner'\n",
-		"a hold rule for no tool":      apApproval + "\tlist hold 'nosuchtool:x'\n",
+		"no approver":                                  "\nconfig approval 'appr'\n\toption client 'a'\n",
+		"the client approves itself":                   "\nconfig approval 'appr'\n\toption client 'a'\n\toption approver 'a'\n",
+		"a PIN alone":                                  apApproval + "\toption factor 'pin'\n",
+		"no time to approve":                           apApproval + "\toption ttl '0s'\n",
+		"max_open of zero":                             apApproval + "\toption max_open '0'\n",
+		"approvals neither on nor off":                 apApproval + "\toption approvals 'maybe'\n",
+		"two sections for one client":                  apApproval + "\nconfig approval 'second'\n\toption client 'a'\n\toption approver 'owner'\n",
+		"a hold rule for no tool":                      apApproval + "\tlist hold 'nosuchtool:x'\n",
 		"a hold policy for no client with an approval": policy("\toption hold '1'\n"),
 	}
 	for name, body := range bad {
@@ -1202,5 +1202,71 @@ func TestCLIStatusJSONSaysActionsHeldForApproval(t *testing.T) {
 	caps, _ := rep["capabilities"].(map[string]any)
 	if caps["actions_held_for_approval"] != true {
 		t.Errorf("capabilities = %v; a caller cannot tell that high-impact changes are held\n%s", rep["capabilities"], out)
+	}
+}
+
+// An approval takes the PIN and a code, whatever the window's own factor is: the PIN alone opens
+// this client's window, and it approves nothing.
+func TestApproveNeedsPINAndCode(t *testing.T) {
+	r := newApRig(t, "")
+	id := r.holdPortForward()
+	a := r.action(id)
+	for _, c := range []struct{ pin, code string }{{apPIN, ""}, {"", r.code(time.Now())}, {"0000", r.code(time.Now())}} {
+		if out, isErr := r.approve("owner", id, a.Hash, c.pin, c.code); !isErr {
+			t.Fatalf("approved with pin %q and code %q: %q", c.pin, c.code, out)
+		}
+	}
+	if st := r.staged(); len(st) != 0 {
+		t.Errorf("staged %q", st)
+	}
+	if n := r.failures(); n != 3 {
+		t.Errorf("%d tries counted, want 3: a wrong factor counts, as an unlock's does", n)
+	}
+	if out, isErr := r.approve("owner", id, a.Hash, apPIN, r.code(time.Now())); isErr {
+		t.Errorf("the PIN and a code did not approve: %q", out)
+	}
+}
+
+// Only a change the owner approved is confirmed without an unlock: one made in a window still
+// needs the window to be confirmed.
+func TestConfirmWithoutUnlockOnlyForApprovedChanges(t *testing.T) {
+	r := newApRig(t, "")
+	r.unlock()
+	r.setAfter("system", replaceLine(apSystem, "description='baseline'", "description='attic'"))
+	out, isErr := r.apply(map[string]any{"config": "system", "section": "@system[0]", "option": "description", "value": "attic"})
+	if isErr {
+		t.Fatalf("apply: %s", out)
+	}
+	r.s.mfa.Lock("a")
+	out, isErr = callTool(t, r.s, "a", "uci_confirm", map[string]any{"token": confirmToken(t, out)})
+	if !isErr || !strings.Contains(out, "second factor") {
+		t.Errorf("a change made in a window was confirmed after the window closed: %q (error=%v)", out, isErr)
+	}
+}
+
+// A policy with hold '1' grants calls that always wait, whatever the classifier makes of them.
+func TestHoldPolicyHoldsWhatItGrants(t *testing.T) {
+	approval := apApproval + "\nconfig policy\n\toption client 'a'\n\tlist tools 'ubus_call'\n\tlist scopes 'network.reload'\n" +
+		"\toption hold '1'\n\toption approval 'appr'\n"
+	r := newApRig(t, approval)
+	out, isErr := r.ubusCall("network", "reload", nil)
+	id := r.mustHold(out, isErr)
+	if a := r.action(id); !strings.Contains(a.Headline, "WAITS FOR YOUR APPROVAL BY POLICY: ubus_call network.reload") {
+		t.Errorf("headline %q", a.Headline)
+	}
+}
+
+// `list hold` and `list refuse` add to the built-in rules and take nothing away.
+func TestApprovalRulesAddHoldsAndRefusals(t *testing.T) {
+	r := newApRig(t, apApproval+"\tlist hold 'uci_apply:system.*.description'\n\tlist refuse 'ubus_call:network.restart'\n")
+	r.unlock()
+	r.setAfter("system", replaceLine(apSystem, "description='baseline'", "description='attic'"))
+	out, isErr := r.apply(map[string]any{"config": "system", "section": "@system[0]", "option": "description", "value": "attic"})
+	r.mustHold(out, isErr)
+	if out, isErr := r.ubusCall("network", "restart", nil); !isErr || !strings.Contains(out, "for a person") {
+		t.Errorf("a refuse rule did not refuse: %q (error=%v)", out, isErr)
+	}
+	if calls := r.ubusCalls(); len(calls) != 0 {
+		t.Errorf("ubus was called: %q", calls)
 	}
 }

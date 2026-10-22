@@ -14,6 +14,11 @@
 > [`uci_get` never returns a secret](#uci_get-never-returns-a-secret).
 > Since 0.5.0.4 an agent the owner allows can install packages, from the official OpenWrt feeds
 > only; see [`apk_add` installs from the official OpenWrt feeds only](#apk_add-installs-from-the-official-openwrt-feeds-only).
+> Since 0.5.0.5 a client can be given an approval section: its high-impact changes (a port opened
+> to the internet, the firewall weakened, VPN routing, DNS or the time servers changed, an open
+> Wi-Fi into a trusted network, a guard service stopped, a reboot) are held for the owner's client,
+> which approves each one with a PIN and a code against the hash of exactly what it was shown; see
+> [High-impact changes wait for the owner's approval](#high-impact-changes-wait-for-the-owners-approval).
 > The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
 > feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
 > upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
@@ -422,6 +427,7 @@ Adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **exec arguments** | `exec` runs a program only with an argument form its policy names. A program granted with no form runs with no arguments. See [below](#exec-runs-only-the-argument-forms-its-grant-names). |
 | **Secrets in the audit log** | A value is written as `<redacted>` when the option, the section or the argument it travels in names a credential. Names stay visible, so the log still shows what changed. See [below](#the-audit-log-never-holds-a-secrets-value). |
 | **WireGuard private key** | A new client's private key reaches uci on standard input, never as an argument, where every process on the router could read it. |
+| **High-impact changes** | For a client with an approval section, a change that opens the router to the internet, weakens the firewall, changes VPN routing, DNS or the time servers, opens Wi-Fi without a password into a trusted network, stops a guard service or reboots is held, whatever the window says, and runs only once the owner's client approves that one change with a PIN and a code. What only a person may do is refused outright. See [below](#high-impact-changes-wait-for-the-owners-approval). |
 | **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
 
 `ubus_list` is the one ungated tool: introspection returns method names and argument types,
@@ -461,8 +467,10 @@ Both were the first choice; neither works for a resident daemon.
 | `logread` | *(tool-level)* | Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions are not dropped. Returns the config **and a UTF-8 QR** to scan. Emits a private key — see below. |
 | `apk_add` | the package name, for each package named | Installs packages from the official OpenWrt feeds (OpenWrt 25.12 and later), by name only. `dry_run` lists every package that would be installed or changed and installs nothing. See below. |
-| `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without the right ones, and repeated failures lock it for a while. |
-| `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it can only remove access. |
+| `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how you satisfy the factor; it grants nothing without the right ones, and repeated failures lock it for a while. A client with an approval section cannot open its own window; its approver opens it, with `client`. |
+| `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it can only remove access. The approver, with `client`, closes that client's window and rejects every change it has held. |
+| `action_status`, `action_withdraw` | *(ungated)* | A client's own held changes: how each stands, and withdrawing one still waiting. |
+| `action_list`, `action_approve`, `action_reject` | *(the approval section)* | For the approver only: the held changes with their cards and hashes, approving one with the PIN and a code, rejecting one with no factor. |
 
 ### `exec` runs only the argument forms its grant names
 
@@ -742,6 +750,105 @@ What it does **not** cover:
   `archive.openwrt.org`, cannot use `apk_add`.
 - **Other tools.** `exec` is a root shell by design: an agent granted `exec` on `apk` can run
   apk with any option it likes. Do not grant `exec` to an agent that must not install anything.
+
+### High-impact changes wait for the owner's approval
+
+An unlock window lets a client change settings, the VPN and services, each with a rollback.
+Some changes are too consequential for a window, and a rollback does not undo what they let
+happen while they stood: a port opened to the internet, the firewall weakened, VPN routing or
+DNS changed. For a client given an approval section those are held. Nothing runs; the daemon
+keeps a record of the exact call in memory, writes a card for it, and only the client named as
+approver can approve it, one change at a time, with the owner's PIN and a current code, against
+the hash of that card.
+
+```
+config approval 'hermes_main_approval'
+	option client    'hermes-main'
+	option approver  'hermes-main-owner'
+	option factor    'pin+totp'      # or totp; a PIN alone is refused, it is not fresh
+	option ttl       '10m'           # how long a held change waits
+	option max_open  '1'             # changes waiting at once
+	option max_per_hour '6'          # proposals an hour
+	option pause_after_rejects '3'   # rejections in a row before proposals pause
+	option pause     '1h'
+	list hold   'ubus_call:network.restart'   # more to hold: <tool>:<scope glob>
+	list refuse 'uci_apply:mwan3.*'           # more to refuse
+```
+
+A policy may say `option approval '<section>'`, which makes the configuration fail to load
+without that section, and `option hold '1'`, which holds everything it grants.
+
+**What is held.** What decides a `uci_apply` is the state the batch would leave, not the batch:
+it is applied to a copy of the configs in RAM with the router's own `uci -c <copy> -P <copy>`,
+both states are read with `uci -X show`, and they are compared. So a port forward created
+disabled and switched on in a second call is held on the second call, although all it says is
+`enabled=1`. A zone faces the internet when its networks include `wan` or `wan6`, or it
+masquerades.
+
+| Held | Read as |
+|---|---|
+| A port opened to the internet | an enabled redirect (DNAT) or rule (any target but DROP or REJECT, unset included) from an internet zone or `*`, not there before |
+| The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet, the internet port joining a bridge or another interface |
+| VPN or policy routing | any change to a WireGuard interface or peer, a route or rule for every destination added, changed or removed, anything in `pbr` |
+| Who answers DNS | dnsmasq's `server`, `address`, `noresolv`, `resolvfile`, `rebind_protection`; DHCP option 6; a host, domain or cname for a name with a dot; an interface's `dns` and `peerdns` |
+| The time servers | any change to a `timeserver` section: the codes are only as good as the clock |
+| Open Wi-Fi into a trusted network | an enabled access point with no password (`none`, unset, `owe`) whose network is in a zone that accepts input and does not face the internet |
+| A guard stopped, a reboot | `rc.init` stopping or disabling firewall, dropbear, uhttpd, rpcd, openwrt-mcp, network or dnsmasq; `system.reboot` |
+| What cannot be checked | a state that cannot be read waits for the owner, and the card says why |
+
+**What only a person may do** is refused for such a client, whatever its grants say, window
+open or not: `exec`, `wg_new_client` (its answer is a private key), a change to the configs
+`hermes`, `openwrt-mcp`, `rpcd`, `dropbear`, `uhttpd`, `luci`, `fstab` and `ucitrack`, and the
+ubus methods `file.*`, `system.sysupgrade`, `system.signal`, `service.*`, `uci.*` and
+`rpc-sys.*`.
+
+**The card is the daemon's.** It is written from the record: a headline built from parsed values
+(addresses through `netip`, ports as numbers, anything else shown as unreadable), then every
+changed key with its value before and after. A secret's value reads `<redacted>`; whatever the
+client chose is quoted after its key with anything unprintable escaped, so a right-to-left
+override or a line break cannot reorder or forge a line. A card over 3500 characters is refused,
+never cut short:
+
+```
+Router change waiting for you (KQWPT, ref 3f9a12c0, expires in 10 min)
+Asked by hermes-main:
+OPENS THE ROUTER TO THE INTERNET: tcp 2222 from any address to 192.168.1.20:22
+
+firewall.ssh_nas, new redirect
+  + dest 'lan'
+  + dest_ip '192.168.1.20'
+  + dest_port '22'
+  + proto 'tcp'
+  + src 'wan'
+  + src_dport '2222'
+```
+
+**Approving.** `action_approve {id, hash, pin, code}` from the approver checks, in order and
+without counting a try: that the caller approves that client, that the change is still held,
+that the hash is the record's whole hash, that the configs it was checked against are unchanged
+on disk, that no other apply waits for confirmation, that a policy still grants it, and that
+approval can work (on, the approver paired, the PIN and the app set up). Only then are the
+factors checked, against the same failure count and lockout as an unlock, and the code's step is
+spent, so it neither approves another change nor opens the window. The stored call then runs
+once through the tool's own function, so `uci_apply`'s own refusals still stand, with a rollback
+of 300 seconds that the client may confirm without an unlock. An approval never opens or
+extends the window, and a window approves nothing. Rejecting takes no factor; the approver's
+`mfa_lock {client}` rejects every held change of that client.
+
+**Proposing.** A client may propose while its window is closed: at most one change waiting,
+six an hour, and none for an hour after three rejections in a row. The answer is not an error:
+
+```
+HELD KQWPT until 2026-10-22T12:44:00Z
+This change waits for the owner's approval, ...
+```
+
+**What this does not cover.** A change whose danger lies in a value the rules do not read (a
+port forward to a host that runs something, a firewall zone's extra rules, a package's own
+remote-administration switch) runs in the window like any other. The records live in memory, so
+a restart drops every held change. `status` cannot show them: it runs as its own process.
+
+Check for it with `openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities.actions_held_for_approval'`.
 
 ### `wg_new_client`
 
