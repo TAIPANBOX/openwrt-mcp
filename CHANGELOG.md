@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.0-taipanbox.7 (binary version 0.5.0.7)
+
+**Built with Go 1.27.3.** No change in behaviour. Go 1.27.2's `crypto/x509` carries
+GO-2026-6809, fixed in 1.27.3; this daemon makes no TLS connection, so the flaw is not reached,
+but a binary built on 1.27.2 still reports it to anyone who scans it. The version moves so that a
+router upgrading from the feed gets the rebuilt binary and the running daemon is restarted onto
+it. CI's actions move to their current major versions (Node.js 24).
+
 ## v0.5.0-taipanbox.6 (binary version 0.5.0.6)
 
 **A code from the app keeps working for a minute after the app moves on.** `@decided 2026-10-22`
