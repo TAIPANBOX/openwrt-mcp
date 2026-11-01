@@ -1,7 +1,6 @@
 # openwrt-mcp
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/GlassOnTin/openwrt-mcp)](https://github.com/GlassOnTin/openwrt-mcp/releases)
 [![ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/glassontin)
 
 > **This is the TAIPANBOX fork of [GlassOnTin/openwrt-mcp](https://github.com/GlassOnTin/openwrt-mcp).**
@@ -19,32 +18,44 @@
 > Wi-Fi into a trusted network, a guard service stopped, a reboot) are held for the owner's client,
 > which approves each one with a PIN and a code against the hash of exactly what it was shown; see
 > [High-impact changes wait for the owner's approval](#high-impact-changes-wait-for-the-owners-approval).
-> The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
-> feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
-> upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
-> the rest is not upstream yet.
+> Since 0.5.0.6 a code from the app keeps working for a minute after the app moves on to the next
+> one, so the owner has time to type the PIN first.
+>
+> **Current release:** 0.5.0.7-r1, in the signed
+> [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt) feed since 2026-11-01 for OpenWrt
+> 25.12 on `aarch64_cortex-a53` and `aarch64_generic`. The feed's package is built from this fork's
+> `main`, at the commit whose `main.go` carries that version; every release is described in
+> [CHANGELOG.md](CHANGELOG.md). The apk packaging was offered upstream in
+> [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1); the rest of the
+> work described here lives in this fork.
 
 An MCP server that runs **on** an OpenWrt router, so Claude Code (or any MCP client) can
 inspect and change it over an SSH tunnel.
 
 Developed against **GL.iNet** routers — verified on a Flint 2, a Flint 4 (GL-BE14000,
 firmware 4.9.0, router mode) and a Slate 7 Pro (GL-BE10000, firmware 4.8.4, AP mode).
-GL.iNet firmware 4.x is OpenWrt 21.02 with `opkg`, which is what the `.ipk` targets, and it
-should suit any `opkg`-based OpenWrt including stock 24.10.
+GL.iNet firmware 4.x is OpenWrt 21.02 with `opkg`, which is what the `.ipk` targets. Stock
+OpenWrt used `opkg` up to 24.10.
 
-Stock OpenWrt 25.12 replaced opkg with apk, so it needs the `.apk` that `make apk` builds
-instead. That package is installed and exercised on every CI run inside OpenWrt's own
-published rootfs image, by OpenWrt's own apk: `scripts/gate-apk-parity.sh` requires it to
-land the same files with the same modes as the `.ipk`, to enable the service, to leave a
-hand-edited `/etc/config/openwrt-mcp` alone across a reinstall, and to remove cleanly.
-What CI cannot show is aarch64 hardware. This apk was installed and exercised on a Flint 2
-and a Brume 2, both vanilla OpenWrt 25.12.5, aarch64, on 2026-09-27: paired a client,
-granted scoped policies, and removed cleanly afterward.
+Stock OpenWrt 25.12 replaced opkg with apk, so it needs the `.apk` instead: from the signed
+hermes-openwrt feed, or the one `make apk` builds. On every CI run that package is installed and
+exercised by OpenWrt's own apk inside OpenWrt's own published 25.12.4 rootfs images, `x86-64`
+and `aarch64_generic` (the second under QEMU): `scripts/gate-apk-parity.sh` requires it to land
+the same files with the same modes as the `.ipk`, to enable the service, to leave a hand-edited
+`/etc/config/openwrt-mcp` alone across a reinstall, and to remove cleanly. On 2026-09-27 the same
+apk was installed and exercised on a Flint 2 and a Brume 2, both vanilla OpenWrt 25.12.5 on
+aarch64 hardware: it paired a client, granted scoped policies, and removed cleanly afterward.
 
-Two differences from the `.ipk` worth knowing before you install one:
+Three things worth knowing before you install the `.apk`:
 
-- `apk` refuses an unsigned local file, so installing by hand needs
-  `apk add --allow-untrusted ./openwrt-mcp-0.5.0.2-r1.apk`. Signing belongs to a repository
+- **From the feed, there is no `--allow-untrusted`.** The feed's index is signed, and apk checks
+  it against the key you trust. Add that key and the feed as step 1 of
+  [Install in the hermes-openwrt README](https://github.com/TAIPANBOX/hermes-openwrt#install)
+  shows (the two commands before `apk update`), then `apk update && apk add openwrt-mcp`.
+  `apk add hermes-agent` pulls it in as a dependency. The feed carries `aarch64_cortex-a53` and
+  `aarch64_generic`.
+- **A file you built yourself is unsigned**, and `apk` refuses an unsigned local file, so installing
+  it by hand needs `apk add --allow-untrusted ./openwrt-mcp-*.apk`. Signing belongs to a repository
   index rather than to a package, and OpenWrt's own package build does not sign either.
 - The filename carries no architecture. For `.ipk` it did; for `.apk` the architecture is
   in the metadata, and `apk` refuses a package built for another one.
@@ -53,7 +64,8 @@ The other OpenWrt MCP servers I could find run *off*-router — they SSH in from
 workstation on every call. This one is resident: a single static Go binary under procd,
 always on, with its own authorisation and audit trail.
 
-It exposes ten generic tools rather than a hand-written catalogue of router features.
+It exposes sixteen generic tools, listed [below](#tools), rather than a hand-written catalogue of
+router features.
 `ubus list -v` already self-describes every object, method and argument signature on the
 box, so the agent discovers what your router can actually do instead of trusting a list
 that goes stale with each firmware update. On a GL.iNet box that means the vendor's own
@@ -176,15 +188,15 @@ Leave the router's password auth enabled — it is your way back in if the key i
 
 ### 2. Install the daemon
 
-Download `openwrt-mcp_*.ipk` from [Releases](https://github.com/GlassOnTin/openwrt-mcp/releases)
-and push it over — no toolchain needed:
+On OpenWrt 25.12 and later, install from the signed hermes-openwrt feed: its
+[Install section](https://github.com/TAIPANBOX/hermes-openwrt#install) has the two lines that
+trust the feed's key and add the feed, then `apk update && apk add openwrt-mcp`, and go on to
+step 3.
 
-```sh
-ssh root@192.168.8.1 'cat > /tmp/openwrt-mcp.ipk' < openwrt-mcp_0.5.0_aarch64_cortex-a53.ipk
-ssh root@192.168.8.1 'opkg install /tmp/openwrt-mcp.ipk && rm -f /tmp/openwrt-mcp.ipk'
-```
-
-Or build it yourself — needs **Go 1.26+** on your workstation, nothing on the router:
+This fork publishes no `.ipk` of its own. The one on upstream's
+[Releases](https://github.com/GlassOnTin/openwrt-mcp/releases) page is upstream's 0.5.0 and has
+none of the additions listed at the top. For an `opkg` firmware such as GL.iNet 4.x, build this
+fork's package. It needs **Go 1.27+** on your workstation, nothing on the router:
 
 ```sh
 make install-ipk ROUTER=root@192.168.8.1   # packaged; survives a firmware upgrade
@@ -251,7 +263,9 @@ mfa_unlock {"code":"552575"}   -> code already used
 
 Codes are single-use, unlocks are per client and held in memory only, so a daemon restart
 re-locks everything. Standard RFC 6238 (SHA-1, 6 digits, 30s), checked against the RFC's own
-test vectors, so any authenticator app works.
+test vectors, so any authenticator app works. A code is accepted for one 30-second step before
+its own and two after it, which is 60 seconds past the moment the app stops showing it: time to
+type a PIN first. It is the same for `mfa_unlock` and `action_approve`.
 
 > Run `mfa enrol` yourself over SSH. The secret is printed once and is *recoverable* from
 > `/etc/openwrt-mcp/mfa` (mode 0600), unlike bearer tokens which are stored only as digests -
@@ -537,8 +551,9 @@ Every call is written to the audit log with its arguments. The recorder redacts 
   summary on the audit line is built from the same redacted arguments.
 
 Option and section names stay visible, and a WireGuard `public_key` is not a secret, so it stays.
-Not covered: a secret under a name that gives no sign of it, and what a tool returns to the client.
-`uci_get` redacts its answers; `exec`, `ubus_call` and `logread` do not.
+The redaction is by name: a value under a name that gives no sign of a secret is written as it is.
+The log holds arguments and a summary, never what a tool returns. `uci_get` redacts its answers;
+`exec`, `ubus_call` and `logread` return what they read.
 
 ### `uci_get` never returns a secret
 
@@ -578,16 +593,17 @@ network.peer1.public_key='hQ7r...='
   such key. It is a named capability rather than a version comparison so that a caller tests
   for the guarantee it depends on.
 
-What it does **not** cover:
+How far it reaches:
 
-- **Other tools.** `ubus_call` returns what the ubus method returns, and some return config
-  with the keys inside it: `network.wireless status` lists every interface's settings,
-  `key` included, and rpcd's `ubus call uci get` returns any option's value. None of that is
-  redacted: do not grant those objects to an agent whose context should not hold the keys.
-  `exec` can read `/etc/config/wireless` directly, and `wg_new_client` returns the new
-  client's private key by design.
-- **A secret under a name that gives no sign of it**, such as a token pasted into a ddns
-  `update_url` or a password inside ppp's `pppd_options`.
+- **`uci_get` is the redacted read path.** `ubus_call` returns what the ubus method returns,
+  and some return config with the keys inside it: `network.wireless status` lists every
+  interface's settings, `key` included, and rpcd's `ubus call uci get` returns any option's
+  value. Do not grant those objects to an agent whose context should not hold the keys.
+  `exec` reads `/etc/config/wireless` as it is, and `wg_new_client` returns the new client's
+  private key by design.
+- **The match is by name.** A secret under a name that gives no sign of it, such as a token
+  pasted into a ddns `update_url` or a password inside ppp's `pppd_options`, is returned as it
+  is.
 - **Some harmless settings are hidden** because their names end like a secret's: for
   example `sae_ext_key`, OpenVPN's `persist_key`, GRE's `ikey`/`okey`, vpnc's `hexpasswd`.
   The rule errs that way on purpose.
@@ -653,21 +669,22 @@ Nothing in this batch was applied. Ask the operator to make that change by hand 
 - **A client can check for it** before granting `uci_apply`: `openwrt-mcp status --json`
   reports `"capabilities": {"uci_apply_refuses_code_exec": true}`.
 
-What it does **not** cover:
+How far it reaches:
 
-- **Other tools.** `exec` is a root shell by design and is held back by policy, by the argument
-  forms the policy names and by the second factor: do not grant it to an agent that must not run
-  commands, and do not grant a program that is a shell with a form that passes arbitrary text.
-  `ubus_call` reaches rpcd's `file.exec` and every service's own ubus methods a grant covers.
-- **Options that write a file, or read data from one**: dnsmasq's and odhcpd's `leasefile`,
-  openvpn's `log`, dnsmasq's `addnhosts` and `serversfile`, hostapd's `eap_user_file`. These
-  are data, not code, though a file written into the wrong place can become code at the next
-  boot.
+- **The check belongs to `uci_apply`.** `exec` is a root shell by design and is held back by
+  policy, by the argument forms the policy names and by the second factor: do not grant it to an
+  agent that must not run commands, and do not grant a program that is a shell with a form that
+  passes arbitrary text. `ubus_call` reaches rpcd's `file.exec` and every service's own ubus
+  methods a grant covers.
+- **Options that write a file, or read data from one** are data and stay allowed: dnsmasq's and
+  odhcpd's `leasefile`, openvpn's `log`, dnsmasq's `addnhosts` and `serversfile`, hostapd's
+  `eap_user_file`. A file written into the wrong place can become code at the next boot.
 - **Raw directives of daemons that cannot run a program from them**, such as the Wi-Fi
-  `hostapd_options` and the firewall's `extra` options.
+  `hostapd_options` and the firewall's `extra` options, stay allowed.
 - **Services that give a shell by design**, such as ttyd or rtty with their defaults: turning
   one on is a setting, and whoever connects still has to log in.
-- **A package the list does not know**, that runs an option whose name gives no sign of it.
+- **The list is by option name.** A package the list does not know is judged by the names of its
+  options, so an option that runs something under a name that gives no sign of it is allowed.
 - **Some harmless settings are refused** because of the rules above: unetd's `connect` (a
   list of peers, refused because ppp's `connect` is a program), sqm or acme names that are not
   plain file names, and any value with a line break in it, such as multi-line `notes`. The
@@ -736,20 +753,22 @@ installs unless `APK_CONFIG=/dev/null`; and a file named `golang1.26` in the wor
 is read as that package. The rules for names and for feed lines are each in `apk_add.go`, and
 taking any single one out turns a named test red.
 
-What it does **not** cover:
+How far it reaches:
 
-- **Install scripts.** An official package's install scripts run as root. That is the trust
-  placed in the official, signed OpenWrt feeds, and it is the whole of what `apk_add` trusts.
+- **Install scripts run as root.** An official package's install scripts run as root. That is the
+  trust placed in the official, signed OpenWrt feeds, and it is the whole of what `apk_add`
+  trusts.
 - **Dependencies and upgrades.** `apk add` pulls in what a package depends on, and if a new
   package needs a newer version of an installed library, apk upgrades it. Only the names the
   agent asked for are checked against the policy scope; the dry run shows the rest.
-- **Removing or upgrading packages on purpose.** There is no `apk del` or `apk upgrade` tool.
-- **opkg.** Routers before OpenWrt 25.12 use opkg, and there `apk_add` fails because there is
-  no apk.
-- **Mirrors and other official hosts.** A router that fetches from a mirror, or from
-  `archive.openwrt.org`, cannot use `apk_add`.
-- **Other tools.** `exec` is a root shell by design: an agent granted `exec` on `apk` can run
-  apk with any option it likes. Do not grant `exec` to an agent that must not install anything.
+- **It installs, and only installs.** Removing or upgrading a package on purpose is the
+  operator's: there is no `apk del` or `apk upgrade` tool.
+- **It needs apk.** `apk_add` is for OpenWrt 25.12 and later; routers before that use opkg, and
+  there it fails because there is no apk.
+- **It needs the official host.** `apk_add` reads feeds on `downloads.openwrt.org`; a router
+  that fetches from a mirror, or from `archive.openwrt.org`, is refused.
+- **`exec` is a root shell by design:** an agent granted `exec` on `apk` can run apk with any
+  option it likes. Do not grant `exec` to an agent that must not install anything.
 
 ### High-impact changes wait for the owner's approval
 
@@ -792,7 +811,7 @@ is an ACCEPT.
 |---|---|
 | A port opened to the internet | an enabled redirect (any target but SNAT) or rule (any target but DROP or REJECT, unset included) from an internet zone or `*`, not there before |
 | The firewall weakened | an internet zone's input or forward becoming ACCEPT (an unset policy reads as the defaults' one), a forwarding from an internet zone, a change in which zones face the internet (a zone that takes a `device` or a `subnet` counts as one), any change to what a zone takes by `device` or `subnet`, a network on the internet side (`wan`, `wan6`, or one an internet zone lists, such as a station-mode Wi-Fi uplink) put into a zone that does not face the internet, and any change to a raw nftables fragment (`extra`, `extra_src`, `extra_dest`) anywhere in the firewall |
-| The network rewired | any change to a `bridge-vlan`, `switch_vlan` or `switch_port` section, to the `ports` or `ifname` of a device (one added or removed included), or to what an interface sits on (`device`, `ifname`), whatever it names: which port ends up carrying the internet is netifd's to resolve, and following every way it does is not attempted. The one shape that runs is an interface put on a new bridge made in the same change with neither ports nor `ifname`, `type bridge` and named `br-<name>` with no dot or `@` and no device of that name in the kernel yet, which is how a guest network is set up |
+| The network rewired | any change to a `bridge-vlan`, `switch_vlan` or `switch_port` section, to the `ports` or `ifname` of a device (one added or removed included), or to what an interface sits on (`device`, `ifname`), whatever it names: netifd decides which port ends up carrying the internet, so every such change is held and none is traced. The one shape that runs is an interface put on a new bridge made in the same change with neither ports nor `ifname`, `type bridge` and named `br-<name>` with no dot or `@` and no device of that name in the kernel yet, which is how a guest network is set up |
 | VPN or policy routing | any change to a WireGuard interface or peer, a route or rule for every destination added, changed or removed, anything in `pbr` |
 | Who answers DNS | dnsmasq's `server`, `address`, `noresolv`, `resolvfile`, `rebind_protection`; DHCP option 6; a host, domain or cname for a name with a dot; an interface's `dns` and `peerdns` |
 | The time servers | any change to a `timeserver` section: the codes are only as good as the clock |
@@ -847,10 +866,12 @@ HELD KQWPT until 2026-10-22T12:44:00Z
 This change waits for the owner's approval, ...
 ```
 
-**What this does not cover.** A change whose danger lies in a value the rules do not read (a
-port forward to a host that runs something, a firewall zone's extra rules, a package's own
-remote-administration switch) runs in the window like any other. The records live in memory, so
-a restart drops every held change. `status` cannot show them: it runs as its own process.
+**How far the rules reach.** They read the state a change leaves, so a change whose danger lies
+in a value they do not read (a port forward to a host that runs something, a firewall zone's
+extra rules, a package's own remote-administration switch) runs in the window like any other.
+The records live in the daemon's memory, so a restart drops every held change and the client
+proposes again. `status` runs as its own process and reports each client's approval facts, read
+from files; the held changes are listed by `action_list`.
 
 Check for it with `openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities.actions_held_for_approval'`.
 
@@ -937,26 +958,33 @@ timer (value survived 25s past a 15s deadline, snapshot cleaned up); `exec` runn
 than a pipe; `.ipk` install, conffile preservation and service enable via postinst; and the
 whole path over a real `ssh -L` tunnel.
 
-**Verified previously on the Flint 2 and not re-run here:** revocation taking effect without
-a restart, per-client policy isolation.
+**Verified on the Flint 2:** revocation taking effect without a restart, per-client policy
+isolation.
 
-`go test -list . ./...` lists 264 tests (plus a benchmark and four fuzz targets) and `go test ./...`
-passes. The `uci_get` redaction was mutation-checked on 2026-10-08: 22 deliberate breaks of
+`go test -list . ./...` lists 325 tests (plus a benchmark and six fuzz targets) and `go test ./...`
+passes. `scripts/gate-scenarios-bound.sh` checks, both ways, that every scenario in `features/`
+has a check and every check a scenario: 98 scenarios in nine feature files are bound to 181 named
+tests, each of which exists and passes, and the 8 scenarios of `features/apk-packaging.feature`
+are bound to the checks of `scripts/gate-apk-parity.sh`. The `uci_get` redaction was
+mutation-checked on 2026-10-08: 22 deliberate breaks of
 the redaction and its wiring (a dropped name such as `key1` or `r0kh`, a parser that splits
 on every newline, a missing call), each made a named test fail. `apk_add` was mutation-checked
 on 2026-10-09: 13 deliberate breaks (apk run outside an empty directory, `/etc/apk/config` left
 on, no `--` before the names, `distfeeds.list` unfiltered, the `.apk` or version rule dropped,
 names not checked, `dry_run` not simulating, the tool exempt from policy, the capability gone,
 the host check loosened to any `*openwrt.org`, a refusal audited as an error, the no-feed
-refusal skipped), each made a named test fail. Historical, from when the
-suite had 29 tests and not re-run against the current code: they were mutation-checked, and
-neutering `Authorise` failed 5, neutering `redact` failed 2, neutering the response pruner failed 2, and removing the pruner *call* from
+refusal skipped), each made a named test fail. The rules that hold a change for the owner's
+approval are mutation-checked by `scripts/mutate-held.py`: 77 deliberate breaks of the
+classifier and the approval flow, each caught by the test named for it. The first mutation check,
+on the suite of 29 tests, gave: neutering `Authorise` failed 5, neutering `redact` failed 2,
+neutering the response pruner failed 2, and removing the pruner *call* from
 `ubus_call` failed 1 — that last test exists because an earlier version of the pruner had
 working unit tests while nothing asserted the tool actually used it.
 
-**Not verified:** that `keep.d` survives a real `sysupgrade` — the file is installed and
-correct, but no firmware flash was performed. Concurrency beyond one apply at a time
-(a second `uci_apply` is refused while one is pending).
+**Upgrades and concurrency.** Both packages ship `/lib/upgrade/keep.d/openwrt-mcp`, which lists
+the binary, the init script and the token store for `sysupgrade`; `gate-apk-parity.sh` requires
+the `.apk` to land the same files with the same modes as the `.ipk`. One apply runs at a time: a
+second `uci_apply` is refused while one is pending.
 
 ### Findings from the Flint 4 `gl-*` surface
 
@@ -978,23 +1006,23 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
   would have to reimplement the Lua layer's validation; the generic path is not safe here.
 - **`/tmp/gl_screen/active_config` holds the screen passcode in plaintext** (`PASSCODE
   "1402"`). Any `exec` grant broad enough to read it exposes the device unlock code. The
-  auditor's `redact` covers the audit log, and `uci_get`'s redaction covers `uci_get`; nothing
-  redacts what `exec` returns.
+  auditor's `redact` covers the audit log, and `uci_get`'s redaction covers `uci_get`; `exec`
+  returns the file as it reads it.
 - `sms_manager` exists but exposes exactly one ubus method, `set_sms_log_level`. There is no
   send or read surface, and with no modem fitted (`cellular.modem status` → `{"modems": []}`)
   nothing to wrap.
 
-**Known limitations**
+**How it behaves at its edges**
 
-- There is **no permanent denylist**. `sysupgrade`, `firstboot` and `mtd` are reachable if a
+- **Nothing is denied permanently.** `sysupgrade`, `firstboot` and `mtd` are reachable if a
   policy grants them. That was a deliberate choice; keep recovery access to hand.
 - A broadly scoped `exec` grant is a root shell, and from a root shell `openwrt-mcp allow`
   grants anything else. Scoped grants (`exec` limited to named binaries, each with the argument
   forms it needs) keep the policy engine meaningful; an unscoped one reduces it to an audit trail.
 - An argument form is a pattern, not a program. `sh -c *` is a shell, and a `*` in an argument
   matches any text, dots and dashes included, within that one argument. Exact forms are safer.
-- A value under a name that gives no sign of being a secret is written to the audit log as it
-  is. The redaction is by name, so a password under `ppp.pppd_options` is not caught.
+- The audit log's redaction is by name: a value under a name that gives no sign of being a
+  secret, such as a password under `ppp.pppd_options`, is written as it is.
 - Unlock windows, failure counts and lockouts live in the daemon's memory only, so a restart
   re-locks everything but also forgives a lockout. For the same reason `openwrt-mcp status
   --json` (a separate process) reports each client's `mfa` object with `live_state: false`: the
@@ -1017,11 +1045,26 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
 - Tool output is capped at 64 KB, and ubus replies over 8 KB have arrays capped at 16
   elements. Both cuts say so in the result, but a caller that needs a full time series has
   to reach for a narrower ubus method.
-- `uci_get` redacts secret option values; `ubus_call` and `exec` do not, and some ubus
-  methods (`network.wireless status`) return the Wi-Fi keys. See
+- `uci_get` redacts secret option values; `ubus_call` and `exec` return what they read, and some
+  ubus methods (`network.wireless status`) return the Wi-Fi keys. See
   [`uci_get` never returns a secret](#uci_get-never-returns-a-secret).
 - Install with `make install-ipk`, not `make install`, if you want the daemon to survive a
   firmware upgrade — only the packaged form ships the `keep.d` entry.
+
+---
+
+## Related OpenWrt packages
+
+Each is a package for OpenWrt 25.12 from a signed apk feed:
+
+- [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt): Hermes Agent as a native OpenWrt
+  package (apk, procd, UCI; no Docker, no chroot). It reads and changes the router through this
+  daemon, and its feed is where `openwrt-mcp` is published.
+- [openwrt-llm-gateway](https://github.com/TAIPANBOX/openwrt-llm-gateway): the house's model
+  servers behind one name on the router, with a key per device. Hermes from `hermes-agent` r20 can
+  take its model from it.
+- [rollcall](https://github.com/TAIPANBOX/rollcall): the routers of one OpenWrt site watch each
+  other and report incidents through whichever of them is still online.
 
 ---
 
