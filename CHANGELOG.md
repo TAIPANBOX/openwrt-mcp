@@ -94,12 +94,13 @@ opted in; never from a link, never from a local file, never with signature check
 - `status --json` capabilities carry `"apk_add_official_feed_only": true`.
 - `features/apk-add-official-feed.feature`, 13 scenarios bound to 21 tests.
 
-### Not covered
+### How far it reaches
 
 - An official package's install scripts run as root: that is the trust in the official
   signed feeds. apk add pulls in dependencies and may upgrade an installed library a new
   package needs; only the names asked for are checked against the policy scope.
-- Routers on a mirror or on `archive.openwrt.org`, and opkg-based routers, cannot use it.
+- It reads feeds on `downloads.openwrt.org`: a router on a mirror or on `archive.openwrt.org` is
+  refused, and on an opkg-based router it fails because there is no apk.
 - `exec` granted on `apk` is still a way to run apk with any option.
 
 ## v0.5.0-taipanbox.3 (binary version 0.5.0.3)
@@ -136,13 +137,13 @@ on every reload; `dhcp.*` let it set dnsmasq's `dhcpscript`.
 - Deleting a hook option, or a whole include section, is still allowed: removing a hook runs
   nothing. Deleting one option of an include is refused, since deleting `enabled` re-enables it.
 
-### Not covered
+### How far it reaches
 
 - `exec` and `ubus_call` (rpcd's `file.exec`) still run whatever policy grants them.
 - Options that write or read a data file (`leasefile`, `log`, `addnhosts`), raw directives of
   daemons that cannot run a program (`hostapd_options`), and shell-giving services such as
-  ttyd or rtty left at their defaults.
-- A package the list does not know, running an option whose name gives no sign of it.
+  ttyd or rtty left at their defaults are allowed.
+- A package the list does not know is judged by the names of its options.
 
 ## v0.5.0-taipanbox.2 (binary version 0.5.0.2)
 
@@ -179,11 +180,12 @@ and the configs an agent needs to read (`wireless`, `network`) hold the router's
   first release still reported `0.5.0`. A fork-style `0.5.0-taipanbox.2` is not a version apk
   accepts, so the package could not have been built with it.
 
-### Not covered
+### How far it reaches
 
-- `ubus_call` and `exec` are not redacted, and some ubus methods return the Wi-Fi keys
-  (`network.wireless status`, rpcd's `uci get`). A secret under a name that gives no sign of
-  it (a token in a ddns `update_url`) is not found.
+- `uci_get` is the redacted read path: `ubus_call` and `exec` return what they read, and some
+  ubus methods return the Wi-Fi keys (`network.wireless status`, rpcd's `uci get`). The match is
+  by name, so a secret under a name that gives no sign of it (a token in a ddns `update_url`) is
+  returned as it is.
 
 ## v0.5.0-taipanbox.1
 
@@ -445,10 +447,10 @@ Findings from the Flint 4 `gl-*` surface, including why `gl_screen.*` should not
 (its ubus `set` bypasses the Lua validation layer and corrupts the value type) and that the
 screen passcode is stored in plaintext under `/tmp`.
 
-### Known limitations
+### Packaging
 
-The `.ipk` targets `opkg`. Stock OpenWrt 24.10+ moved to `apk` and is untested; GL.iNet
-firmware 4.x is opkg-based, so this does not affect the Flint range.
+The `.ipk` targets `opkg`, which GL.iNet firmware 4.x uses, so it serves the Flint range.
+Stock OpenWrt moved to `apk` with 25.12, which the `.apk` that `make apk` builds serves.
 
 ## v0.1.0
 
