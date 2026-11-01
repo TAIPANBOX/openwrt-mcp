@@ -1,7 +1,6 @@
 # openwrt-mcp
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/GlassOnTin/openwrt-mcp)](https://github.com/GlassOnTin/openwrt-mcp/releases)
 [![ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/glassontin)
 
 > **This is the TAIPANBOX fork of [GlassOnTin/openwrt-mcp](https://github.com/GlassOnTin/openwrt-mcp).**
@@ -19,10 +18,16 @@
 > Wi-Fi into a trusted network, a guard service stopped, a reboot) are held for the owner's client,
 > which approves each one with a PIN and a code against the hash of exactly what it was shown; see
 > [High-impact changes wait for the owner's approval](#high-impact-changes-wait-for-the-owners-approval).
-> The `openwrt-mcp` package in the [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
-> feed is built from a tagged commit of this fork's `main`. The apk packaging was offered
-> upstream in [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1);
-> the rest is not upstream yet.
+> Since 0.5.0.6 a code from the app keeps working for a minute after the app moves on to the next
+> one, so the owner has time to type the PIN first.
+>
+> **Current release:** 0.5.0.7-r1, in the signed
+> [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt) feed since 2026-11-01 for OpenWrt
+> 25.12 on `aarch64_cortex-a53` and `aarch64_generic`. The feed's package is built from this fork's
+> `main`, at the commit whose `main.go` carries that version; every release is described in
+> [CHANGELOG.md](CHANGELOG.md). The apk packaging was offered upstream in
+> [GlassOnTin/openwrt-mcp#1](https://github.com/GlassOnTin/openwrt-mcp/pull/1); the rest is not
+> upstream yet.
 
 An MCP server that runs **on** an OpenWrt router, so Claude Code (or any MCP client) can
 inspect and change it over an SSH tunnel.
@@ -32,19 +37,25 @@ firmware 4.9.0, router mode) and a Slate 7 Pro (GL-BE10000, firmware 4.8.4, AP m
 GL.iNet firmware 4.x is OpenWrt 21.02 with `opkg`, which is what the `.ipk` targets, and it
 should suit any `opkg`-based OpenWrt including stock 24.10.
 
-Stock OpenWrt 25.12 replaced opkg with apk, so it needs the `.apk` that `make apk` builds
-instead. That package is installed and exercised on every CI run inside OpenWrt's own
-published rootfs image, by OpenWrt's own apk: `scripts/gate-apk-parity.sh` requires it to
-land the same files with the same modes as the `.ipk`, to enable the service, to leave a
-hand-edited `/etc/config/openwrt-mcp` alone across a reinstall, and to remove cleanly.
-What CI cannot show is aarch64 hardware. This apk was installed and exercised on a Flint 2
-and a Brume 2, both vanilla OpenWrt 25.12.5, aarch64, on 2026-09-27: paired a client,
-granted scoped policies, and removed cleanly afterward.
+Stock OpenWrt 25.12 replaced opkg with apk, so it needs the `.apk` instead: from the signed
+hermes-openwrt feed, or the one `make apk` builds. That package is installed and exercised on
+every CI run inside OpenWrt's own published rootfs image, by OpenWrt's own apk:
+`scripts/gate-apk-parity.sh` requires it to land the same files with the same modes as the
+`.ipk`, to enable the service, to leave a hand-edited `/etc/config/openwrt-mcp` alone across a
+reinstall, and to remove cleanly. What CI cannot show is aarch64 hardware. This apk was
+installed and exercised on a Flint 2 and a Brume 2, both vanilla OpenWrt 25.12.5, aarch64, on
+2026-09-27: paired a client, granted scoped policies, and removed cleanly afterward.
 
-Two differences from the `.ipk` worth knowing before you install one:
+Three things worth knowing before you install the `.apk`:
 
-- `apk` refuses an unsigned local file, so installing by hand needs
-  `apk add --allow-untrusted ./openwrt-mcp-0.5.0.2-r1.apk`. Signing belongs to a repository
+- **From the feed, there is no `--allow-untrusted`.** The feed's index is signed, and apk checks
+  it against the key you trust. Add that key and the feed as step 1 of
+  [Install in the hermes-openwrt README](https://github.com/TAIPANBOX/hermes-openwrt#install)
+  shows (the two commands before `apk update`), then `apk update && apk add openwrt-mcp`.
+  `apk add hermes-agent` pulls it in as a dependency. The feed carries `aarch64_cortex-a53` and
+  `aarch64_generic`.
+- **A file you built yourself is unsigned**, and `apk` refuses an unsigned local file, so installing
+  it by hand needs `apk add --allow-untrusted ./openwrt-mcp-*.apk`. Signing belongs to a repository
   index rather than to a package, and OpenWrt's own package build does not sign either.
 - The filename carries no architecture. For `.ipk` it did; for `.apk` the architecture is
   in the metadata, and `apk` refuses a package built for another one.
@@ -53,7 +64,8 @@ The other OpenWrt MCP servers I could find run *off*-router — they SSH in from
 workstation on every call. This one is resident: a single static Go binary under procd,
 always on, with its own authorisation and audit trail.
 
-It exposes ten generic tools rather than a hand-written catalogue of router features.
+It exposes sixteen generic tools, listed [below](#tools), rather than a hand-written catalogue of
+router features.
 `ubus list -v` already self-describes every object, method and argument signature on the
 box, so the agent discovers what your router can actually do instead of trusting a list
 that goes stale with each firmware update. On a GL.iNet box that means the vendor's own
@@ -176,15 +188,15 @@ Leave the router's password auth enabled — it is your way back in if the key i
 
 ### 2. Install the daemon
 
-Download `openwrt-mcp_*.ipk` from [Releases](https://github.com/GlassOnTin/openwrt-mcp/releases)
-and push it over — no toolchain needed:
+On OpenWrt 25.12 and later, install from the signed hermes-openwrt feed: its
+[Install section](https://github.com/TAIPANBOX/hermes-openwrt#install) has the two lines that
+trust the feed's key and add the feed, then `apk update && apk add openwrt-mcp`, and go on to
+step 3.
 
-```sh
-ssh root@192.168.8.1 'cat > /tmp/openwrt-mcp.ipk' < openwrt-mcp_0.5.0_aarch64_cortex-a53.ipk
-ssh root@192.168.8.1 'opkg install /tmp/openwrt-mcp.ipk && rm -f /tmp/openwrt-mcp.ipk'
-```
-
-Or build it yourself — needs **Go 1.26+** on your workstation, nothing on the router:
+This fork publishes no `.ipk` of its own. The one on upstream's
+[Releases](https://github.com/GlassOnTin/openwrt-mcp/releases) page is upstream's 0.5.0 and has
+none of the additions listed at the top. For an `opkg` firmware such as GL.iNet 4.x, build this
+fork's package. It needs **Go 1.27+** on your workstation, nothing on the router:
 
 ```sh
 make install-ipk ROUTER=root@192.168.8.1   # packaged; survives a firmware upgrade
@@ -251,7 +263,9 @@ mfa_unlock {"code":"552575"}   -> code already used
 
 Codes are single-use, unlocks are per client and held in memory only, so a daemon restart
 re-locks everything. Standard RFC 6238 (SHA-1, 6 digits, 30s), checked against the RFC's own
-test vectors, so any authenticator app works.
+test vectors, so any authenticator app works. A code is accepted for one 30-second step before
+its own and two after it, which is 60 seconds past the moment the app stops showing it: time to
+type a PIN first. It is the same for `mfa_unlock` and `action_approve`.
 
 > Run `mfa enrol` yourself over SSH. The secret is printed once and is *recoverable* from
 > `/etc/openwrt-mcp/mfa` (mode 0600), unlike bearer tokens which are stored only as digests -
@@ -940,7 +954,7 @@ whole path over a real `ssh -L` tunnel.
 **Verified previously on the Flint 2 and not re-run here:** revocation taking effect without
 a restart, per-client policy isolation.
 
-`go test -list . ./...` lists 264 tests (plus a benchmark and four fuzz targets) and `go test ./...`
+`go test -list . ./...` lists 325 tests (plus a benchmark and six fuzz targets) and `go test ./...`
 passes. The `uci_get` redaction was mutation-checked on 2026-10-08: 22 deliberate breaks of
 the redaction and its wiring (a dropped name such as `key1` or `r0kh`, a parser that splits
 on every newline, a missing call), each made a named test fail. `apk_add` was mutation-checked
@@ -948,7 +962,9 @@ on 2026-10-09: 13 deliberate breaks (apk run outside an empty directory, `/etc/a
 on, no `--` before the names, `distfeeds.list` unfiltered, the `.apk` or version rule dropped,
 names not checked, `dry_run` not simulating, the tool exempt from policy, the capability gone,
 the host check loosened to any `*openwrt.org`, a refusal audited as an error, the no-feed
-refusal skipped), each made a named test fail. Historical, from when the
+refusal skipped), each made a named test fail. The rules that hold a change for the owner's
+approval are mutation-checked by `scripts/mutate-held.py`: 77 deliberate breaks of the
+classifier and the approval flow, each caught by the test named for it. Historical, from when the
 suite had 29 tests and not re-run against the current code: they were mutation-checked, and
 neutering `Authorise` failed 5, neutering `redact` failed 2, neutering the response pruner failed 2, and removing the pruner *call* from
 `ubus_call` failed 1 — that last test exists because an earlier version of the pruner had
@@ -1022,6 +1038,21 @@ correct, but no firmware flash was performed. Concurrency beyond one apply at a 
   [`uci_get` never returns a secret](#uci_get-never-returns-a-secret).
 - Install with `make install-ipk`, not `make install`, if you want the daemon to survive a
   firmware upgrade — only the packaged form ships the `keep.d` entry.
+
+---
+
+## Related OpenWrt packages
+
+Each is a package for OpenWrt 25.12 from a signed apk feed:
+
+- [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt): Hermes Agent as a native OpenWrt
+  package (apk, procd, UCI; no Docker, no chroot). It reads and changes the router through this
+  daemon, and its feed is where `openwrt-mcp` is published.
+- [openwrt-llm-gateway](https://github.com/TAIPANBOX/openwrt-llm-gateway): the house's model
+  servers behind one name on the router, with a key per device. Hermes from `hermes-agent` r20 can
+  take its model from it.
+- [rollcall](https://github.com/TAIPANBOX/rollcall): the routers of one OpenWrt site watch each
+  other and report incidents through whichever of them is still online.
 
 ---
 
