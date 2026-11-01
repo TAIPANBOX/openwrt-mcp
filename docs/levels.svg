@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="540" viewBox="0 0 1280 540" role="img" aria-label="What a client may do with the router: read once a policy grants it; change settings after the owner's unlock, with a rollback; a high-impact change waits until the owner approves that one change with a PIN and a code; what only a person may do is refused, and no client's uci change may make the router run code">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+</defs>
+<style>.s{font-family:ui-sans-serif,system-ui,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}</style>
+<rect width="1280" height="540" fill="url(#bg)"/><rect width="1280" height="540" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<text class="s" x="48" y="58" font-size="26" fill="#e6edf3" font-weight="600">What a client may do with the router</text>
+<text class="s" x="48" y="84" font-size="14" fill="#69788b">Nothing is granted by default. A policy grants tools and scopes; the owner's own steps decide the rest, and the riskier the change, the more they ask.</text>
+
+<rect x="48" y="112" width="381" height="214" rx="10" fill="#0f1520" stroke="#3fb950"/>
+<rect x="48" y="112" width="381" height="6" rx="3" fill="#3fb950"/>
+<text class="s" x="70" y="154" font-size="19" fill="#e6edf3" font-weight="600">1  Read</text>
+<text class="m" x="70" y="178" font-size="13" fill="#3fb950">once a policy grants it</text>
+<text class="m" x="70" y="212" font-size="13" fill="#9aa7b8">uci_get, ubus_call, logread</text>
+<text class="m" x="70" y="234" font-size="13" fill="#9aa7b8">ubus_list needs no grant</text>
+<text class="m" x="70" y="256" font-size="13" fill="#9aa7b8">uci_get: secrets &lt;redacted&gt;</text>
+<text class="m" x="70" y="304" font-size="12" fill="#3fb950" font-weight="600">no step for the owner</text>
+
+<rect x="449" y="112" width="381" height="214" rx="10" fill="#0f1520" stroke="#2dd4bf"/>
+<rect x="449" y="112" width="381" height="6" rx="3" fill="#2dd4bf"/>
+<text class="s" x="471" y="154" font-size="19" fill="#e6edf3" font-weight="600">2  Change settings</text>
+<text class="m" x="471" y="178" font-size="13" fill="#2dd4bf">after the owner's unlock</text>
+<text class="m" x="471" y="212" font-size="13" fill="#9aa7b8">the tools its policy gates</text>
+<text class="m" x="471" y="234" font-size="13" fill="#9aa7b8">a PIN, an app code or both</text>
+<text class="m" x="471" y="256" font-size="13" fill="#9aa7b8">15 minutes; 5 misses, a lockout</text>
+<text class="m" x="471" y="304" font-size="12" fill="#2dd4bf" font-weight="600">uci changes undone unless confirmed</text>
+
+<rect x="850" y="112" width="381" height="214" rx="10" fill="#0f1520" stroke="#d29922"/>
+<rect x="850" y="112" width="381" height="6" rx="3" fill="#d29922"/>
+<text class="s" x="872" y="154" font-size="19" fill="#e6edf3" font-weight="600">3  High impact</text>
+<rect x="1079" y="136" width="136" height="22" rx="11" fill="#141a23" stroke="#d29922"/>
+<text class="m" x="1147" y="151" font-size="11" fill="#d29922" text-anchor="middle">approval section</text>
+<text class="m" x="872" y="178" font-size="13" fill="#d29922">the owner approves each change</text>
+<text class="m" x="872" y="212" font-size="13" fill="#9aa7b8">a port opened to the internet,</text>
+<text class="m" x="872" y="234" font-size="13" fill="#9aa7b8">the firewall weakened, rewiring,</text>
+<text class="m" x="872" y="256" font-size="13" fill="#9aa7b8">VPN routing, DNS, time servers,</text>
+<text class="m" x="872" y="278" font-size="13" fill="#9aa7b8">open Wi-Fi, a guard stopped, reboot</text>
+<text class="m" x="872" y="304" font-size="12" fill="#d29922" font-weight="600">Approve + PIN + code, by hash</text>
+
+<rect x="48" y="346" width="1183" height="86" rx="10" fill="#0f1520" stroke="#f85149" stroke-dasharray="5 4"/>
+<text class="s" x="70" y="378" font-size="17" fill="#f85149" font-weight="600">4  Only a person</text>
+<rect x="1079" y="364" width="136" height="22" rx="11" fill="#141a23" stroke="#f85149"/>
+<text class="m" x="1147" y="379" font-size="11" fill="#f85149" text-anchor="middle">approval section</text>
+<text class="m" x="232" y="378" font-size="13" fill="#9aa7b8">exec, wg_new_client, the agent's or this daemon's config, SSH, the web server,</text>
+<text class="m" x="232" y="398" font-size="13" fill="#9aa7b8">LuCI, mounts, rpcd; over ubus a firmware flash, a signal, file.*, service.*,</text>
+<text class="m" x="232" y="418" font-size="13" fill="#9aa7b8">uci.*, rpc-sys.*: refused whatever the grants, with the window open or not</text>
+
+<rect x="48" y="448" width="1183" height="48" rx="10" fill="#0f1520" stroke="#f85149" stroke-dasharray="5 4"/>
+<text class="s" x="70" y="478" font-size="15" fill="#f85149" font-weight="600">Every client</text>
+<text class="m" x="232" y="478" font-size="13" fill="#9aa7b8">a uci change that would make the router run code (an include, a hook, a script) is refused</text>
+
+<text class="s" x="48" y="524" font-size="13" fill="#69788b">A code from the app counts once, and keeps working for 60 s after the app moves on. An approval never opens the window, and a window approves nothing.</text>
+</svg>

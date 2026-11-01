@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="540" viewBox="0 0 1280 540" role="img" aria-label="One call through openwrt-mcp, check by check in the order of server.go and tools.go: the Origin and the bearer token (403, 401), the shape of the call, the standing policy, the approval section's rules (refused or HELD), the second factor, and only then the tool itself; every outcome is written to the audit log.">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <marker id="arrowG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3fb950"/></marker>
+</defs>
+<rect width="1280" height="540" fill="url(#bg)"/><rect width="1280" height="540" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<style>.s{font-family:ui-sans-serif,-apple-system,Segoe UI,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.flow{stroke-dasharray:6 5;animation:flow 1s linear infinite}@keyframes flow{to{stroke-dashoffset:-11}}@keyframes go{0%{transform:translateX(0)}8%{transform:translateX(0)}16%,24%{transform:translateX(200px)}32%,40%{transform:translateX(400px)}48%,56%{transform:translateX(600px)}64%,72%{transform:translateX(800px)}80%,92%{transform:translateX(1000px)}100%{transform:translateX(1000px)}}.pill{animation:go 10s ease-in-out infinite}@media (prefers-reduced-motion:reduce){.flow,.pill{animation:none}}</style>
+<text class="s" x="48" y="58" font-size="26" fill="#e6edf3" font-weight="600">One call, six checks, in this order</text>
+<text class="s" x="48" y="86" font-size="14" fill="#69788b">The first check that refuses answers, and nothing runs on the router until every one has passed. The order is the code's: server.go, then tools.go.</text>
+
+<line x1="140" y1="118" x2="1140" y2="118" stroke="#283341" stroke-width="2"/>
+<g class="pill"><rect x="88" y="104" width="104" height="28" rx="14" fill="#141a23" stroke="#2dd4bf"/><text class="m" x="140" y="123" font-size="12" fill="#2dd4bf" text-anchor="middle">a call</text></g>
+
+<rect x="48" y="146" width="184" height="236" rx="10" fill="#0f1520" stroke="#4493f8"/>
+<circle cx="78" cy="176" r="14" fill="none" stroke="#4493f8" stroke-width="2"/>
+<text class="s" x="78" y="181" font-size="13" fill="#4493f8" font-weight="600" text-anchor="middle">1</text>
+<text class="s" x="64" y="222" font-size="15" fill="#e6edf3" font-weight="600">Origin, token</text>
+<text class="m" x="64" y="250" font-size="12" fill="#9aa7b8">a web page's Origin</text>
+<text class="m" x="64" y="270" font-size="12" fill="#9aa7b8">is refused; the</text>
+<text class="m" x="64" y="290" font-size="12" fill="#9aa7b8">bearer token names</text>
+<text class="m" x="64" y="310" font-size="12" fill="#9aa7b8">the client</text>
+<text class="m" x="64" y="362" font-size="12" fill="#ff6b63" font-weight="600">403, 401</text>
+<line class="flow" x1="234" y1="264" x2="244" y2="264" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
+
+<rect x="248" y="146" width="184" height="236" rx="10" fill="#0f1520" stroke="#4493f8"/>
+<circle cx="278" cy="176" r="14" fill="none" stroke="#4493f8" stroke-width="2"/>
+<text class="s" x="278" y="181" font-size="13" fill="#4493f8" font-weight="600" text-anchor="middle">2</text>
+<text class="s" x="264" y="222" font-size="15" fill="#e6edf3" font-weight="600">Shape</text>
+<text class="m" x="264" y="250" font-size="12" fill="#9aa7b8">a ubus name that is</text>
+<text class="m" x="264" y="270" font-size="12" fill="#9aa7b8">not plain, an empty</text>
+<text class="m" x="264" y="290" font-size="12" fill="#9aa7b8">argv: refused before</text>
+<text class="m" x="264" y="310" font-size="12" fill="#9aa7b8">any grant is read</text>
+<text class="m" x="264" y="362" font-size="12" fill="#ff6b63" font-weight="600">DENIED</text>
+<line class="flow" x1="434" y1="264" x2="444" y2="264" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
+
+<rect x="448" y="146" width="184" height="236" rx="10" fill="#0f1520" stroke="#2dd4bf"/>
+<circle cx="478" cy="176" r="14" fill="none" stroke="#2dd4bf" stroke-width="2"/>
+<text class="s" x="478" y="181" font-size="13" fill="#2dd4bf" font-weight="600" text-anchor="middle">3</text>
+<text class="s" x="464" y="222" font-size="15" fill="#e6edf3" font-weight="600">Policy</text>
+<text class="m" x="464" y="250" font-size="12" fill="#9aa7b8">the tool, unexpired;</text>
+<text class="m" x="464" y="270" font-size="12" fill="#9aa7b8">every scope covered;</text>
+<text class="m" x="464" y="290" font-size="12" fill="#9aa7b8">exec: a named form;</text>
+<text class="m" x="464" y="310" font-size="12" fill="#9aa7b8">calls a minute</text>
+<text class="m" x="464" y="342" font-size="12" fill="#ff6b63" font-weight="600">DENIED, with the</text>
+<text class="m" x="464" y="362" font-size="12" fill="#ff6b63" font-weight="600">allow line to fix it</text>
+<line class="flow" x1="634" y1="264" x2="644" y2="264" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
+
+<rect x="648" y="146" width="184" height="236" rx="10" fill="#0f1520" stroke="#d29922"/>
+<circle cx="678" cy="176" r="14" fill="none" stroke="#d29922" stroke-width="2"/>
+<text class="s" x="678" y="181" font-size="13" fill="#d29922" font-weight="600" text-anchor="middle">4</text>
+<text class="s" x="664" y="222" font-size="15" fill="#e6edf3" font-weight="600">Owner's rules</text>
+<text class="m" x="664" y="250" font-size="12" fill="#9aa7b8">approval section:</text>
+<text class="m" x="664" y="270" font-size="12" fill="#9aa7b8">a person's call is</text>
+<text class="m" x="664" y="290" font-size="12" fill="#9aa7b8">refused; a high-</text>
+<text class="m" x="664" y="310" font-size="12" fill="#9aa7b8">impact change held</text>
+<text class="m" x="664" y="342" font-size="12" fill="#ff6b63" font-weight="600">DENIED</text>
+<text class="m" x="664" y="362" font-size="12" fill="#d29922" font-weight="600">HELD, with a card</text>
+<line class="flow" x1="834" y1="264" x2="844" y2="264" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
+
+<rect x="848" y="146" width="184" height="236" rx="10" fill="#0f1520" stroke="#2dd4bf"/>
+<circle cx="878" cy="176" r="14" fill="none" stroke="#2dd4bf" stroke-width="2"/>
+<text class="s" x="878" y="181" font-size="13" fill="#2dd4bf" font-weight="600" text-anchor="middle">5</text>
+<text class="s" x="864" y="222" font-size="15" fill="#e6edf3" font-weight="600">Second factor</text>
+<text class="m" x="864" y="250" font-size="12" fill="#9aa7b8">a tool the policy</text>
+<text class="m" x="864" y="270" font-size="12" fill="#9aa7b8">gates needs an open</text>
+<text class="m" x="864" y="290" font-size="12" fill="#9aa7b8">window: a PIN, a</text>
+<text class="m" x="864" y="310" font-size="12" fill="#9aa7b8">code or both</text>
+<text class="m" x="864" y="342" font-size="12" fill="#ff6b63" font-weight="600">DENIED, naming</text>
+<text class="m" x="864" y="362" font-size="12" fill="#ff6b63" font-weight="600">what to ask for</text>
+<line class="flow" x1="1034" y1="264" x2="1044" y2="264" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
+
+<rect x="1048" y="146" width="184" height="236" rx="10" fill="#0f1520" stroke="#3fb950"/>
+<circle cx="1078" cy="176" r="14" fill="none" stroke="#3fb950" stroke-width="2"/>
+<text class="s" x="1078" y="181" font-size="13" fill="#3fb950" font-weight="600" text-anchor="middle">6</text>
+<text class="s" x="1064" y="222" font-size="15" fill="#e6edf3" font-weight="600">The tool runs</text>
+<text class="m" x="1064" y="250" font-size="12" fill="#9aa7b8">argv, never a shell;</text>
+<text class="m" x="1064" y="270" font-size="12" fill="#9aa7b8">its own refusals</text>
+<text class="m" x="1064" y="290" font-size="12" fill="#9aa7b8">stand; uci_apply</text>
+<text class="m" x="1064" y="310" font-size="12" fill="#9aa7b8">arms a rollback</text>
+<text class="m" x="1064" y="342" font-size="12" fill="#3fb950" font-weight="600">OK</text>
+<text class="m" x="1064" y="362" font-size="12" fill="#ff6b63" font-weight="600">ERROR, DENIED</text>
+
+<rect x="48" y="406" width="1184" height="56" rx="10" fill="#141a23" stroke="#283341"/>
+<rect x="48" y="406" width="6" height="56" rx="3" fill="#69788b"/>
+<text class="s" x="72" y="440" font-size="15" fill="#e6edf3" font-weight="600">audit.jsonl</text>
+<text class="m" x="196" y="440" font-size="12.5" fill="#9aa7b8">every outcome: OK, DENIED, ERROR, HELD; client, tool, scope, arguments with secret values redacted</text>
+
+<text class="s" x="48" y="492" font-size="13" fill="#69788b">ubus_list, mfa_unlock, mfa_lock and the action_* tools skip checks 3 to 5 and decide on their own who may call them.</text>
+<text class="s" x="48" y="512" font-size="13" fill="#69788b">The approver's answered action_list is the one call the audit log leaves out.</text>
+<text class="m" x="1232" y="526" font-size="12" fill="#69788b" text-anchor="end">github.com/TAIPANBOX/openwrt-mcp</text>
+</svg>

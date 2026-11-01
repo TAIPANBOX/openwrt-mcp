@@ -18,7 +18,7 @@ import (
 // loopback and unauthenticated reachability is explicitly not treated as identity, so adding
 // a second HTTP surface would mean either leaving policy and audit data readable to every
 // process on the router, or storing a bearer token on the router for the UI to present --
-// the same hole the README rejects for rpcd's credentialed uci apply.
+// the same hole docs/tools.md rejects for rpcd's credentialed uci apply.
 //
 // A CLI read has neither problem: oui-httpd already runs as root, and root can read the
 // state directory regardless, so this exposes nothing that caller could not already reach.

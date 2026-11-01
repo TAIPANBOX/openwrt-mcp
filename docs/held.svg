@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-label="A held change, in order: the agent's client calls uci_apply for a port forward from wan; openwrt-mcp reads the state it would leave on a RAM copy and answers HELD, applying nothing; the owner's client lists the card and its hash, the bot shows it, the owner taps Approve and sends a PIN and a code; action_approve checks the approver, the record, the whole hash, the configs, the pending applies, the grant and the approval set-up before the factors, then runs the change once with a 300 second rollback, which the agent may confirm without an unlock">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <marker id="aB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="aA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d29922"/></marker>
+  <marker id="aG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+</defs>
+<rect width="1280" height="720" fill="url(#bg)"/><rect width="1280" height="720" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<style>.s{font-family:ui-sans-serif,-apple-system,Segoe UI,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.flow{stroke-dasharray:7 6;animation:flow 1s linear infinite}@keyframes flow{to{stroke-dashoffset:-13}}@media (prefers-reduced-motion:reduce){.flow{animation:none}}</style>
+<text class="s" x="48" y="58" font-size="26" fill="#e6edf3" font-weight="600">A high-impact change waits for the owner</text>
+<text class="s" x="48" y="86" font-size="14" fill="#69788b">For a client with an approval section. Nothing is applied until the owner approves that one change, and it runs exactly as it was shown.</text>
+
+<rect x="60" y="108" width="300" height="56" rx="10" fill="#1b2331" stroke="#4493f8"/>
+<text class="s" x="210" y="132" font-size="16" fill="#e6edf3" font-weight="600" text-anchor="middle">The agent's client</text>
+<text class="m" x="210" y="153" font-size="12" fill="#4493f8" text-anchor="middle">hermes-main</text>
+<rect x="490" y="108" width="300" height="56" rx="10" fill="#1b2331" stroke="#2dd4bf"/>
+<text class="s" x="640" y="132" font-size="16" fill="#e6edf3" font-weight="600" text-anchor="middle">openwrt-mcp</text>
+<text class="m" x="640" y="153" font-size="12" fill="#2dd4bf" text-anchor="middle">on the router</text>
+<rect x="920" y="108" width="300" height="56" rx="10" fill="#1b2331" stroke="#3fb950"/>
+<text class="s" x="1070" y="132" font-size="16" fill="#e6edf3" font-weight="600" text-anchor="middle">The owner's client</text>
+<text class="m" x="1070" y="153" font-size="12" fill="#3fb950" text-anchor="middle">hermes-main-owner, the bot</text>
+
+<line x1="210" y1="164" x2="210" y2="682" stroke="#283341" stroke-width="2" stroke-dasharray="4 5"/>
+<line x1="640" y1="164" x2="640" y2="682" stroke="#283341" stroke-width="2" stroke-dasharray="4 5"/>
+<line x1="1070" y1="164" x2="1070" y2="682" stroke="#283341" stroke-width="2" stroke-dasharray="4 5"/>
+
+<text class="m" x="425" y="192" font-size="12" fill="#4493f8" text-anchor="middle">uci_apply: tcp 2222 from wan</text>
+<line class="flow" x1="212" y1="202" x2="634" y2="202" stroke="#4493f8" stroke-width="2.5" marker-end="url(#aB)"/>
+
+<rect x="470" y="218" width="340" height="64" rx="8" fill="#141a23" stroke="#283341"/>
+<text class="m" x="488" y="244" font-size="12" fill="#9aa7b8">the state it would leave, read on</text>
+<text class="m" x="488" y="266" font-size="12" fill="#9aa7b8">a RAM copy with the router's uci</text>
+
+<text class="m" x="425" y="298" font-size="12" fill="#d29922" text-anchor="middle">HELD KQWPT: nothing applied</text>
+<line class="flow" x1="638" y1="308" x2="216" y2="308" stroke="#d29922" stroke-width="2.5" marker-end="url(#aA)"/>
+<rect x="60" y="326" width="300" height="44" rx="8" fill="#141a23" stroke="#283341"/>
+<text class="m" x="78" y="353" font-size="12" fill="#9aa7b8">it sees no card and no hash</text>
+
+<text class="m" x="855" y="338" font-size="12" fill="#d29922" text-anchor="middle">action_list: the card, its hash</text>
+<line class="flow" x1="642" y1="348" x2="1064" y2="348" stroke="#d29922" stroke-width="2.5" marker-end="url(#aA)"/>
+
+<rect x="920" y="364" width="300" height="76" rx="8" fill="#141a23" stroke="#283341"/>
+<text class="m" x="938" y="388" font-size="12" fill="#9aa7b8">the bot shows the card; the</text>
+<text class="m" x="938" y="408" font-size="12" fill="#9aa7b8">owner taps Approve and sends</text>
+<text class="m" x="938" y="428" font-size="12" fill="#9aa7b8">the PIN and a code: 4821 503917</text>
+
+<text class="m" x="855" y="458" font-size="12" fill="#3fb950" text-anchor="middle">action_approve {id, hash, pin, code}</text>
+<line class="flow" x1="1068" y1="468" x2="646" y2="468" stroke="#3fb950" stroke-width="2.5" marker-end="url(#aG)"/>
+
+<rect x="470" y="484" width="340" height="134" rx="8" fill="#141a23" stroke="#3fb950"/>
+<text class="m" x="488" y="508" font-size="12" fill="#9aa7b8">the approver, still held, the</text>
+<text class="m" x="488" y="528" font-size="12" fill="#9aa7b8">whole hash, configs unchanged,</text>
+<text class="m" x="488" y="548" font-size="12" fill="#9aa7b8">no apply pending, still granted;</text>
+<text class="m" x="488" y="568" font-size="12" fill="#9aa7b8">then the PIN and the code, the</text>
+<text class="m" x="488" y="588" font-size="12" fill="#9aa7b8">code's step spent; it runs once,</text>
+<text class="m" x="488" y="608" font-size="12" fill="#3fb950">with a 300 s rollback</text>
+
+<text class="m" x="425" y="632" font-size="12" fill="#3fb950" text-anchor="middle">applied: a token to confirm</text>
+<line class="flow" x1="638" y1="642" x2="216" y2="642" stroke="#3fb950" stroke-width="2.5" marker-end="url(#aG)"/>
+<text class="m" x="425" y="664" font-size="12" fill="#4493f8" text-anchor="middle">uci_confirm, with no unlock</text>
+<line class="flow" x1="212" y1="674" x2="634" y2="674" stroke="#4493f8" stroke-width="2.5" marker-end="url(#aB)"/>
+
+<text class="s" x="48" y="708" font-size="13" fill="#69788b">One change waits at a time, six an hour, none for an hour after three rejections; a held change expires after 10 minutes. Reject takes no factor.</text>
+</svg>

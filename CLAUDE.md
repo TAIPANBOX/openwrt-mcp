@@ -58,8 +58,8 @@ Each invariant is restated as scenarios in `features/`: `exec-argument-grants.fe
 Every scenario is bound to a named test, and `scripts/gate-scenarios-bound.sh` checks the binding
 both ways and runs the tests.
 
-Guarantees from earlier waves are not numbered here; they are stated in the README's security
-model and held by their feature files: `uci_get` never returns a secret
+Guarantees from earlier waves are not numbered here; they are stated in `docs/security.md` and
+`docs/tools.md` and held by their feature files: `uci_get` never returns a secret
 (`features/uci-get-redaction.feature`), `uci_apply` refuses a change that runs code
 (`features/uci-apply-no-code-exec.feature`), and `apk_add` installs from the official feeds only
 (`features/apk-add-official-feed.feature`).

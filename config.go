@@ -139,7 +139,7 @@ type Policy struct {
 	Hold bool
 
 	mu   sync.Mutex
-	hits []time.Time // rolling 60s window; process-scoped by design (see README)
+	hits []time.Time // rolling 60s window; process-scoped by design (see docs/security.md)
 }
 
 type Config struct {

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="340" viewBox="0 0 1280 340" role="img" aria-label="openwrt-mcp: an MCP server that runs on the OpenWrt router itself, with 16 generic tools, a loopback-only listener and a rollback on every unconfirmed change">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0a0e16"/><stop offset="0.55" stop-color="#0d1117"/><stop offset="1" stop-color="#101826"/>
+  </linearGradient>
+  <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#2dd4bf"/><stop offset="0.5" stop-color="#4493f8"/><stop offset="1" stop-color="#8b7cf6"/>
+  </linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/>
+  </linearGradient>
+  <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+    <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#161b22" stroke-width="1"/>
+  </pattern>
+  <radialGradient id="halo" cx="0.22" cy="0.42" r="0.6">
+    <stop offset="0" stop-color="#4493f8" stop-opacity="0.15"/><stop offset="1" stop-color="#4493f8" stop-opacity="0"/>
+  </radialGradient>
+  <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+<style>.s{font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.flow{stroke-dasharray:6 6;animation:flow 1.4s linear infinite}@keyframes flow{to{stroke-dashoffset:-24}}@media (prefers-reduced-motion:reduce){.flow{animation:none}}</style>
+
+<rect width="1280" height="340" fill="url(#bg)"/>
+<rect width="1280" height="340" fill="url(#grid)" opacity="0.6"/>
+<rect width="1280" height="340" fill="url(#halo)"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+
+<!-- on the right: a client plugged into the router, the router's own surfaces fanning out -->
+<g transform="translate(1040,170)">
+  <g stroke="#283341" stroke-width="2" fill="none">
+    <path d="M 40 -6 C 80 -6 80 -70 120 -70"/>
+    <path d="M 40 0 L 120 0"/>
+    <path d="M 40 6 C 80 6 80 70 120 70"/>
+  </g>
+  <g class="flow" stroke="#3fb950" stroke-width="2" fill="none" opacity="0.8">
+    <path d="M 40 -6 C 80 -6 80 -70 120 -70"/>
+    <path d="M 40 0 L 120 0"/>
+    <path d="M 40 6 C 80 6 80 70 120 70"/>
+  </g>
+  <circle cx="126" cy="-70" r="6" fill="#141a23" stroke="#3fb950" stroke-width="2"/>
+  <circle cx="126" cy="0" r="6" fill="#141a23" stroke="#3fb950" stroke-width="2"/>
+  <circle cx="126" cy="70" r="6" fill="#141a23" stroke="#3fb950" stroke-width="2"/>
+  <text class="m" x="140" y="-66" font-size="12" fill="#9aa7b8">ubus</text>
+  <text class="m" x="140" y="4" font-size="12" fill="#9aa7b8">uci</text>
+  <text class="m" x="140" y="74" font-size="12" fill="#9aa7b8">exec</text>
+  <path class="flow" d="M -150 0 L -46 0" stroke="#4493f8" stroke-width="2" fill="none"/>
+  <rect x="-178" y="-16" width="32" height="32" rx="8" fill="#141a23" stroke="#4493f8" stroke-width="2"/>
+  <circle cx="-162" cy="0" r="4" fill="#4493f8"/>
+  <rect x="-40" y="-30" width="80" height="60" rx="11" fill="#141a23" stroke="#2dd4bf" stroke-opacity="0.9" stroke-width="2" filter="url(#glow)"/>
+  <circle cx="-18" cy="-6" r="4" fill="#3fb950"/>
+  <circle cx="0" cy="-6" r="4" fill="#2dd4bf"/>
+  <circle cx="18" cy="-6" r="4" fill="#4493f8"/>
+  <rect x="-22" y="8" width="44" height="10" rx="3" fill="#0d1117" stroke="#2dd4bf" stroke-opacity="0.6"/>
+  <rect x="-40" y="32" width="80" height="7" rx="3" fill="#0d1117" stroke="#1b2331"/>
+</g>
+
+<!-- wordmark -->
+<text class="s" x="72" y="136" font-size="66" font-weight="700" letter-spacing="-1.5" fill="url(#wordmark)">openwrt-mcp</text>
+
+<text class="s" x="74" y="178" font-size="19" fill="#e6edf3">An MCP server that runs <tspan font-weight="600" fill="#2dd4bf">on the router itself</tspan>.</text>
+<text class="s" x="74" y="206" font-size="15" fill="#69788b">One static Go binary under procd: a token per client, standing policies, an audit log.</text>
+
+<!-- three facts -->
+<g transform="translate(72,240)">
+  <rect x="0" y="0" width="252" height="62" rx="10" fill="#141a23" stroke="#1b2331"/>
+  <text class="s" x="18" y="26" font-size="11" letter-spacing="0.6" fill="#69788b">EXPOSES</text>
+  <text class="s" x="18" y="48" font-size="16" font-weight="600" fill="#e6edf3">16 generic tools</text>
+
+  <rect x="272" y="0" width="252" height="62" rx="10" fill="#141a23" stroke="#1b2331"/>
+  <text class="s" x="290" y="26" font-size="11" letter-spacing="0.6" fill="#69788b">LISTENS ON</text>
+  <text class="s" x="290" y="48" font-size="16" font-weight="600" fill="#e6edf3">loopback only</text>
+
+  <rect x="544" y="0" width="252" height="62" rx="10" fill="#141a23" stroke="#1b2331"/>
+  <text class="s" x="562" y="26" font-size="11" letter-spacing="0.6" fill="#69788b">AN UNCONFIRMED CHANGE</text>
+  <text class="s" x="562" y="48" font-size="16" font-weight="600" fill="#e6edf3">rolls back by itself</text>
+</g>
+</svg>
