@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="Install: trust the signed hermes-openwrt feed, apk add openwrt-mcp, pair a client, grant it what it may do and connect; then a second factor, an approval section, or the .ipk for GL.iNet firmware">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+</defs>
+<rect width="1280" height="400" fill="url(#bg)"/><rect width="1280" height="400" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<style>.s{font-family:ui-sans-serif,system-ui,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}@keyframes flow{to{stroke-dashoffset:-24}}.flow{stroke-dasharray:8 4;animation:flow 1.2s linear infinite}@media (prefers-reduced-motion:reduce){.flow{animation:none}}</style>
+<text class="s" x="48" y="58" font-size="26" fill="#e6edf3" font-weight="600">Install</text>
+<text class="s" x="48" y="84" font-size="14" fill="#69788b">On OpenWrt 25.12, from the signed hermes-openwrt feed. On a 512 MB router the install took 4 s and 4 MB of flash (2026-10-04).</text>
+
+<rect x="48" y="116" width="266" height="148" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="48" y="116" width="4" height="148" rx="2" fill="#2dd4bf"/>
+<text class="s" x="70" y="150" font-size="17" fill="#e6edf3" font-weight="600">1  Trust the feed</text>
+<text class="m" x="70" y="182" font-size="13" fill="#9aa7b8">hermes-openwrt's key</text>
+<text class="m" x="70" y="204" font-size="13" fill="#9aa7b8">one repository line</text>
+<text class="m" x="70" y="244" font-size="12" fill="#3fb950">no --allow-untrusted</text>
+<path class="flow" d="M318,190 L346,190" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="352" y="116" width="266" height="148" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="352" y="116" width="4" height="148" rx="2" fill="#2dd4bf"/>
+<text class="s" x="374" y="150" font-size="17" fill="#e6edf3" font-weight="600">2  Install it</text>
+<text class="m" x="374" y="182" font-size="13" fill="#9aa7b8">apk add openwrt-mcp</text>
+<text class="m" x="374" y="204" font-size="13" fill="#9aa7b8">or with hermes-agent</text>
+<text class="m" x="374" y="244" font-size="12" fill="#3fb950">idle: 7.4 MB of memory</text>
+<path class="flow" d="M622,190 L650,190" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="656" y="116" width="266" height="148" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="656" y="116" width="4" height="148" rx="2" fill="#2dd4bf"/>
+<text class="s" x="678" y="150" font-size="17" fill="#e6edf3" font-weight="600">3  Pair a client</text>
+<text class="m" x="678" y="182" font-size="13" fill="#9aa7b8">openwrt-mcp pair NAME</text>
+<text class="m" x="678" y="204" font-size="13" fill="#9aa7b8">the token, shown once</text>
+<text class="m" x="678" y="244" font-size="12" fill="#3fb950">kept only as its SHA-256</text>
+<path class="flow" d="M926,190 L954,190" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="960" y="116" width="266" height="148" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="960" y="116" width="4" height="148" rx="2" fill="#2dd4bf"/>
+<text class="s" x="982" y="150" font-size="17" fill="#e6edf3" font-weight="600">4  Grant and connect</text>
+<text class="m" x="982" y="182" font-size="13" fill="#9aa7b8">openwrt-mcp allow ...</text>
+<text class="m" x="982" y="204" font-size="13" fill="#9aa7b8">loopback, or ssh -L 8730</text>
+<text class="m" x="982" y="244" font-size="12" fill="#3fb950">nothing granted by default</text>
+
+<text class="s" x="48" y="304" font-size="12" fill="#2dd4bf" font-weight="600">OPTIONAL</text>
+<rect x="48" y="316" width="376" height="52" rx="8" fill="#0f1520" stroke="#30363d" stroke-dasharray="4 3"/>
+<text class="s" x="66" y="338" font-size="14" fill="#e6edf3" font-weight="600">A second factor</text>
+<text class="m" x="66" y="358" font-size="12" fill="#9aa7b8">a PIN, an app code or both, per policy</text>
+<rect x="448" y="316" width="376" height="52" rx="8" fill="#0f1520" stroke="#30363d" stroke-dasharray="4 3"/>
+<text class="s" x="466" y="338" font-size="14" fill="#e6edf3" font-weight="600">An approval section</text>
+<text class="m" x="466" y="358" font-size="12" fill="#9aa7b8">high-impact changes wait for the owner</text>
+<rect x="848" y="316" width="376" height="52" rx="8" fill="#0f1520" stroke="#30363d" stroke-dasharray="4 3"/>
+<text class="s" x="866" y="338" font-size="14" fill="#e6edf3" font-weight="600">Or GL.iNet firmware 4.x</text>
+<text class="m" x="866" y="358" font-size="12" fill="#9aa7b8">the .ipk: make install-ipk</text>
+</svg>

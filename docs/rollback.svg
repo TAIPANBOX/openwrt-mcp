@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="490" viewBox="0 0 1280 490" role="img" aria-label="Every uci_apply carries its own undo: it checks the batch, snapshots the configs it touches to flash, commits and reloads, and arms a rollback timer; uci_confirm keeps the change, the timer running out restores the snapshot, and a restart or a reboot before the confirmation rolls the change back as the daemon starts">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a0e16"/><stop offset="1" stop-color="#0d1117"/></linearGradient>
+  <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#4493f8"/></linearGradient>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#161b22" stroke-width="1"/></pattern>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4493f8"/></marker>
+  <marker id="arrowG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3fb950"/></marker>
+  <marker id="arrowA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#d29922"/></marker>
+</defs>
+<rect width="1280" height="490" fill="url(#bg)"/><rect width="1280" height="490" fill="url(#grid)" opacity="0.5"/>
+<rect width="1280" height="4" fill="url(#accent)"/>
+<style>.s{font-family:ui-sans-serif,system-ui,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}@keyframes flow{to{stroke-dashoffset:-24}}.flow{stroke-dasharray:8 4;animation:flow 1.2s linear infinite}@keyframes tick{from{stroke-dashoffset:0}to{stroke-dashoffset:126}}.timer{stroke-dasharray:126;animation:tick 9s linear infinite}@media (prefers-reduced-motion:reduce){.flow,.timer{animation:none}}</style>
+<text class="s" x="48" y="58" font-size="26" fill="#e6edf3" font-weight="600">Every uci_apply carries its own undo</text>
+<text class="s" x="48" y="84" font-size="14" fill="#69788b">The configs it touches are copied to flash before anything changes, so the undo outlives a restart and a reboot.</text>
+
+<rect x="48" y="112" width="262" height="150" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="48" y="112" width="4" height="150" rx="2" fill="#4493f8"/>
+<text class="s" x="70" y="146" font-size="17" fill="#e6edf3" font-weight="600">1  Check</text>
+<text class="m" x="70" y="178" font-size="13" fill="#9aa7b8">one apply at a time</text>
+<text class="m" x="70" y="200" font-size="13" fill="#9aa7b8">nobody else's edits</text>
+<text class="m" x="70" y="222" font-size="13" fill="#9aa7b8">no code, for any client</text>
+<text class="m" x="70" y="246" font-size="12" fill="#69788b">else nothing is touched</text>
+<path class="flow" d="M314,186 L350,186" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="356" y="112" width="262" height="150" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="356" y="112" width="4" height="150" rx="2" fill="#4493f8"/>
+<text class="s" x="378" y="146" font-size="17" fill="#e6edf3" font-weight="600">2  Snapshot</text>
+<text class="m" x="378" y="178" font-size="13" fill="#9aa7b8">the configs it touches</text>
+<text class="m" x="378" y="200" font-size="13" fill="#9aa7b8">/etc/openwrt-mcp/rollback</text>
+<text class="m" x="378" y="222" font-size="13" fill="#9aa7b8">on flash, not in /tmp</text>
+<text class="m" x="378" y="246" font-size="12" fill="#69788b">directory 0700, file 0600</text>
+<path class="flow" d="M622,186 L658,186" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="664" y="112" width="262" height="150" rx="10" fill="#0f1520" stroke="#30363d"/>
+<rect x="664" y="112" width="4" height="150" rx="2" fill="#2dd4bf"/>
+<text class="s" x="686" y="146" font-size="17" fill="#e6edf3" font-weight="600">3  Commit, reload</text>
+<text class="m" x="686" y="178" font-size="13" fill="#9aa7b8">uci set, change by change</text>
+<text class="m" x="686" y="200" font-size="13" fill="#9aa7b8">uci commit, per config</text>
+<text class="m" x="686" y="222" font-size="13" fill="#9aa7b8">uci reload_config</text>
+<text class="m" x="686" y="246" font-size="12" fill="#3fb950">the change is live</text>
+<path class="flow" d="M930,186 L966,186" stroke="#4493f8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+<rect x="972" y="112" width="262" height="150" rx="10" fill="#0f1520" stroke="#d29922"/>
+<rect x="972" y="112" width="4" height="150" rx="2" fill="#d29922"/>
+<text class="s" x="994" y="146" font-size="17" fill="#e6edf3" font-weight="600">4  Armed</text>
+<circle cx="1196" cy="140" r="20" fill="none" stroke="#283341" stroke-width="4"/>
+<circle class="timer" cx="1196" cy="140" r="20" fill="none" stroke="#d29922" stroke-width="4" transform="rotate(-90 1196 140)"/>
+<text class="m" x="994" y="178" font-size="13" fill="#9aa7b8">90 s by default, 600 max</text>
+<text class="m" x="994" y="200" font-size="13" fill="#9aa7b8">a token to confirm with</text>
+<text class="m" x="994" y="222" font-size="13" fill="#9aa7b8">the agent checks first</text>
+<text class="m" x="994" y="246" font-size="12" fill="#d29922">reverts unless confirmed</text>
+
+<path d="M1103,266 L1103,290 L239,290" stroke="#283341" stroke-width="2" fill="none"/>
+<path class="flow" d="M239,290 L239,320" stroke="#3fb950" stroke-width="2" fill="none" marker-end="url(#arrowG)"/>
+<path class="flow" d="M640,290 L640,320" stroke="#d29922" stroke-width="2" fill="none" marker-end="url(#arrowA)"/>
+<path class="flow" d="M1040,290 L1040,320" stroke="#d29922" stroke-width="2" fill="none" marker-end="url(#arrowA)"/>
+
+<rect x="48" y="326" width="381" height="100" rx="10" fill="#0f1520" stroke="#3fb950"/>
+<text class="m" x="70" y="360" font-size="15" fill="#3fb950" font-weight="700">uci_confirm {token}</text>
+<text class="m" x="70" y="388" font-size="13" fill="#9aa7b8">the change stays</text>
+<text class="m" x="70" y="410" font-size="13" fill="#9aa7b8">the snapshot is deleted</text>
+
+<rect x="449" y="326" width="381" height="100" rx="10" fill="#0f1520" stroke="#d29922"/>
+<text class="s" x="471" y="360" font-size="16" fill="#d29922" font-weight="600">The timer runs out</text>
+<text class="m" x="471" y="388" font-size="13" fill="#9aa7b8">configs restored and reloaded</text>
+<text class="m" x="471" y="410" font-size="13" fill="#9aa7b8">audited: uci_rollback (timeout)</text>
+
+<rect x="850" y="326" width="381" height="100" rx="10" fill="#0f1520" stroke="#d29922"/>
+<text class="s" x="872" y="360" font-size="16" fill="#d29922" font-weight="600">A restart or a reboot first</text>
+<text class="m" x="872" y="388" font-size="13" fill="#9aa7b8">rolled back as the daemon starts</text>
+<text class="m" x="872" y="410" font-size="13" fill="#9aa7b8">nobody vouched for the change</text>
+
+<text class="s" x="48" y="462" font-size="13" fill="#69788b">On a Brume 2, OpenWrt 25.12.5: an unconfirmed change rolled back by itself after its 30 s (2026-09-27), and at start after a reboot (2026-10-04).</text>
+</svg>
