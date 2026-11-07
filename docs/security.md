@@ -179,7 +179,8 @@ instead, and a daemon that starts treats its own start as that moment:
   missing file reads as zero, which is a new install.
 - **A failed write keeps working from memory.** On a full overlay the daemon counts in memory, says so
   once in the log, shows `throttle_persisted: false` in `status`, and writes again as soon as it
-  can. A full disk never becomes a refusal.
+  can. A full disk never becomes a refusal. A restart in that state goes back to the last count that
+  reached the disk.
 - **Tries made at the same moment** are taken one at a time, so none slips under the limit.
 
 **Who can clear a count.** Root, from the router:
