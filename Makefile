@@ -58,6 +58,7 @@ install-apk: apk
 # Installs the .apk into a real OpenWrt 25.12 rootfs and checks it leaves the same state
 # the .ipk does. Needs docker; builds both packages first.
 gate-apk: ipk apk
+	PKGREL=2 ./mkapk.sh openwrt-mcp.$(ARCH) $(VERSION) $(APK_ARCH)
 	./scripts/gate-apk-parity.sh
 
 clean:

@@ -23,6 +23,9 @@ jobs:
       # The WireGuard private key never reaches a command line, and the gate's own teeth
       # prove the gate would notice if it did.
       - run: ./scripts/gate-wg-key-off-argv.sh && ./scripts/gate-wg-key-off-argv-teeth.sh
+      # The guess throttle's rules that can be read from the source, and the proof that the gate
+      # would notice each one broken.
+      - run: ./scripts/gate-throttle.sh && ./scripts/gate-throttle-teeth.sh
 
       # The package is only useful if it builds for the router, so build it here
       # rather than finding out at install time on someone's only router.
@@ -92,6 +95,9 @@ jobs:
         run: |
           make ipk ARCH=${{ matrix.goarch }} IPK_ARCH=${{ matrix.apk_arch }}
           make apk ARCH=${{ matrix.goarch }} APK_ARCH=${{ matrix.apk_arch }}
+          # One revision on, so the gate can make apk replace the package rather than reinstall it.
+          PKGREL=2 ./mkapk.sh openwrt-mcp.${{ matrix.goarch }} \
+            "$(sed -n 's/^var version = "\(.*\)"/\1/p' main.go)" ${{ matrix.apk_arch }}
 
       # Cheap, and it fails for a reason a reader can act on, so it goes first.
       - name: every scenario is bound to a check, and back
@@ -135,9 +141,23 @@ jobs:
           # that is not this leg's will do; mips_24kc is nobody's x86 or arm router.
           ./mkapk.sh "$BIN" "$V" mips_24kc >/dev/null
           expect_red "wrong architecture" check_installs
+          ./mkapk.sh "$BIN" "$V" "$A" >/dev/null
+          # No post-upgrade is what this package shipped until 0.5.0.8: apk replaces it and runs
+          # nothing, so the daemon stays on the old binary. The output of this leg is the record.
+          sed '/--script "post-upgrade/d' mkapk.sh > mkapk.fault.sh && chmod +x mkapk.fault.sh
+          PKGREL=2 ./mkapk.fault.sh "$BIN" "$V" "$A" >/dev/null
+          expect_red "post-upgrade omitted" check_upgrade_restarts
+          sed -n '/check_upgrade_restarts/,$p' /tmp/teeth.out
+          # An upgrade that enables turns back on a service the owner switched off.
+          sed 's#^/etc/init.d/$PKG enabled \&\& /etc/init.d/$PKG restart#/etc/init.d/$PKG enable#' mkapk.sh > mkapk.fault.sh
+          chmod +x mkapk.fault.sh
+          ./mkapk.fault.sh "$BIN" "$V" "$A" >/dev/null
+          PKGREL=2 ./mkapk.sh "$BIN" "$V" "$A" >/dev/null
+          expect_red "post-upgrade enables" check_upgrade_keeps_boot_start
           rm -f mkapk.fault.sh
           # And green again, so the reds above were the faults and not the harness.
           ./mkapk.sh "$BIN" "$V" "$A" >/dev/null
+          PKGREL=2 ./mkapk.sh "$BIN" "$V" "$A" >/dev/null
           ./scripts/gate-apk-parity.sh
 
       - uses: actions/upload-artifact@v7

@@ -92,14 +92,24 @@ fi
 
 # ---- lifecycle scripts
 #
-# apk's stage names differ from opkg's. post-install covers both a fresh install and an
-# upgrade, so the enable+restart pair belongs there; pre-deinstall is opkg's prerm. There
-# is no IPKG_INSTROOT guard to write, because apk runs scripts inside the target root
-# rather than on the build host.
+# apk's stages differ from opkg's, and not only in name. opkg runs postinst on an install and
+# on an upgrade alike; apk runs post-install only when nothing was installed before, and
+# post-upgrade when it replaces a version (apk_db_install_pkg in apk-tools' database.c). So
+# post-install enables and starts the service, and post-upgrade restarts it onto the new
+# binary: without that the old daemon runs on until the next reboot, with the new one on disk.
+# post-upgrade does not enable, and leaves alone a service that is not enabled, because an
+# upgrade leaves the start at boot as the owner set it, as OpenWrt's own default_postinst does.
+# pre-deinstall is opkg's prerm. There is no IPKG_INSTROOT guard to write, because apk runs
+# scripts inside the target root rather than on the build host.
 cat > "$BUILD/post-install" <<EOF
 #!/bin/sh
 /etc/init.d/$PKG enable
 /etc/init.d/$PKG restart
+exit 0
+EOF
+cat > "$BUILD/post-upgrade" <<EOF
+#!/bin/sh
+/etc/init.d/$PKG enabled && /etc/init.d/$PKG restart
 exit 0
 EOF
 cat > "$BUILD/pre-deinstall" <<EOF
@@ -108,7 +118,7 @@ cat > "$BUILD/pre-deinstall" <<EOF
 /etc/init.d/$PKG disable
 exit 0
 EOF
-chmod 0755 "$BUILD/post-install" "$BUILD/pre-deinstall"
+chmod 0755 "$BUILD/post-install" "$BUILD/post-upgrade" "$BUILD/pre-deinstall"
 
 # ---- find a writer for the format
 #
@@ -139,6 +149,7 @@ run_mkpkg \
 	--info "description:MCP server hosted on the router. Exposes ubus, uci and logs to an AI agent over loopback, behind bearer auth, standing policies and an audit log." \
 	--info "depends:libc ubus ubox" \
 	--script "post-install:$BUILD/post-install" \
+	--script "post-upgrade:$BUILD/post-upgrade" \
 	--script "pre-deinstall:$BUILD/pre-deinstall" \
 	--files "$DATA" \
 	--output "$BUILD/$OUT"
