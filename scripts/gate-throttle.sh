@@ -31,8 +31,10 @@ done
 # code <file>: the file without its comments, so a sentence about the wall clock is not a fault.
 code() { sed -E 's#^[[:space:]]*//.*$##; s#[[:space:]]//.*$##' "$REPO/$1"; }
 
-# body <file> <first line pattern>: from that line up to the closing brace at column one.
-body() { code "$1" | awk -v pat="$2" '$0 ~ pat { on = 1 } on { print } on && /^}/ { exit }'; }
+# body <file> <first line>: from the line that starts with that text up to the closing brace at
+# column one. A plain prefix, because awks differ on what a backslash in a -v pattern means, and it
+# reads to the end, so nothing upstream dies on a closed pipe.
+body() { code "$1" | awk -v start="$2" '!done && index($0, start) == 1 { on = 1 } on { print } on && /^}/ { on = 0; done = 1 }'; }
 
 # line <text> <pattern>: the number of the first line that matches, or nothing.
 line() { printf '%s\n' "$1" | grep -n -m1 -E -- "$2" | cut -d: -f1; }
@@ -59,7 +61,7 @@ check_record_shape() {
 }
 
 check_count_before_factors() {
-	b=$(body mfa.go '^func \(m \*MFAStore\) attempt\(')
+	b=$(body mfa.go 'func (m *MFAStore) attempt(')
 	save=$(line "$b" 'm\.saveThrottleLocked\(')
 	check=$(line "$b" 'm\.checkFactorsLocked\(')
 	if [ -z "$save" ] || [ -z "$check" ]; then
@@ -72,8 +74,8 @@ check_count_before_factors() {
 }
 
 check_refusal_writes_nothing() {
-	b=$(body mfa.go '^func \(m \*MFAStore\) attempt\(')
-	refusal=$(printf '%s\n' "$b" | awk '/wait := e\.wait\(/ { on = 1 } on { print } on && /^\t}/ { exit }')
+	b=$(body mfa.go 'func (m *MFAStore) attempt(')
+	refusal=$(printf '%s\n' "$b" | awk '!done && index($0, "wait := e.wait(") { on = 1 } on { print } on && /^\t}/ { on = 0; done = 1 }')
 	if [ -z "$refusal" ]; then
 		fail check_refusal_writes_nothing "measured nothing: attempt() has no refusal branch"
 	elif printf '%s\n' "$refusal" | grep -qE 'saveThrottle|writeThrottle|checkFactors'; then
@@ -84,7 +86,7 @@ check_refusal_writes_nothing() {
 }
 
 check_write_is_atomic() {
-	b=$(body throttle.go '^func atomicWriteFile\(')
+	b=$(body throttle.go 'func atomicWriteFile(')
 	data=$(line "$b" 'syncFile\(f\)')
 	move=$(line "$b" 'os\.Rename\(')
 	dir=$(line "$b" 'syncFile\(d\)')
@@ -124,7 +126,7 @@ check_reset_is_cli_only() {
 }
 
 check_bad_token_is_folded() {
-	b=$(body server.go '^func \(s \*Server\) authenticate\(')
+	b=$(body server.go 'func (s *Server) authenticate(')
 	if [ -z "$b" ] || ! printf '%s\n' "$b" | grep -q 'bearer token'; then
 		fail check_bad_token_is_folded "measured nothing: authenticate() records no bad token"
 	elif printf '%s\n' "$b" | grep -q 's\.audit\.Record('; then
@@ -137,7 +139,7 @@ check_bad_token_is_folded() {
 }
 
 check_refusals_are_folded() {
-	b=$(body tools.go '^func addToolShaped\[')
+	b=$(body tools.go 'func addToolShaped[')
 	if [ -z "$b" ]; then
 		fail check_refusals_are_folded "measured nothing: addToolShaped is gone"
 	elif ! printf '%s\n' "$b" | grep -q 'fold = foldOf(err)' || ! printf '%s\n' "$b" | grep -q 's\.audit\.Fold('; then
