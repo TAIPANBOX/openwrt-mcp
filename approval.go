@@ -441,6 +441,45 @@ func actionsJSON(views []actionView) string {
 	return string(b)
 }
 
+// throttleView is what the owner's client is told of a client's guess throttle, so its plugin can
+// say in the chat that someone else is trying. Every try counted or refused here came with the
+// owner's token or from a client without an approval section: the agent's own tries count nothing.
+type throttleView struct {
+	Client         string `json:"client"`
+	Failures       int    `json:"failures"`
+	Limit          int    `json:"limit"`
+	LockedOutUntil string `json:"locked_out_until,omitempty"`
+	Refused        int    `json:"refused"`
+	Persisted      bool   `json:"persisted"`
+}
+
+func (s *Server) throttleViews(clients []string, now time.Time) []throttleView {
+	out := make([]throttleView, 0, len(clients))
+	for _, c := range clients {
+		up := s.unlockPolicyFor(c)
+		st := s.mfa.StateUnder(c, up, now)
+		v := throttleView{Client: c, Failures: st.Failures, Limit: up.MaxFailures, Refused: st.Refused,
+			Persisted: s.mfa.ThrottlePersisted()}
+		if !st.LockedOutUntil.IsZero() {
+			v.LockedOutUntil = st.LockedOutUntil.UTC().Format(time.RFC3339)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// ownerActionsJSON is what the owner's client lists: the held changes and the throttles.
+func ownerActionsJSON(views []actionView, throttle []throttleView) string {
+	if views == nil {
+		views = []actionView{}
+	}
+	b, _ := json.MarshalIndent(struct {
+		Actions  []actionView   `json:"actions"`
+		Throttle []throttleView `json:"throttle"`
+	}{views, throttle}, "", "  ")
+	return string(b)
+}
+
 // views lists the records of the clients given, oldest first.
 func (s *Server) views(clients []string, owner bool, now time.Time) []actionView {
 	st := s.held
@@ -506,7 +545,8 @@ func (s *Server) actionList(caller string) (string, string, error) {
 	if len(clients) == 0 {
 		return "", "action_list", &refusedError{"refused: " + caller + " approves no client's changes"}
 	}
-	return actionsJSON(s.views(clients, true, time.Now())), "action_list", nil
+	now := time.Now()
+	return ownerActionsJSON(s.views(clients, true, now), s.throttleViews(clients, now)), "action_list", nil
 }
 
 // decidable is the record the caller may decide on, or why there is none. Callers hold s.held.mu.

@@ -71,6 +71,20 @@ Feature: openwrt-mcp installs on a current OpenWrt release
     # Losing this on a router means losing every standing grant on a routine upgrade,
     # silently, which is the worst shape of failure this package could have.
 
+  # bound to: check_upgrade_restarts
+  Scenario: an upgrade puts the running daemon on the new binary
+    Given the package is installed and the service is enabled
+    When apk replaces it with a newer version
+    Then the service is restarted
+    # apk runs post-upgrade here and not post-install, so a package with no post-upgrade
+    # leaves the old daemon running until the next reboot, with the new binary on disk.
+
+  # bound to: check_upgrade_keeps_boot_start
+  Scenario: an upgrade leaves a service the owner switched off as it is
+    Given the owner has switched the start at boot off
+    When apk replaces the package
+    Then the service is not enabled and is not started
+
   # bound to: check_clean_removal
   Scenario: removing the package leaves nothing behind
     When apk removes the package

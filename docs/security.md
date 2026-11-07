@@ -29,7 +29,7 @@ is adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **No code execution through `uci_apply`** | `uci_apply` refuses, before staging anything, any change that would make the router run a program or load configuration that can: a firewall include, dnsmasq's `dhcpscript`, uhttpd's interpreters, openvpn's scripts and the like. For every client, always, with no switch. See [tools.md](tools.md#uci_apply-never-makes-the-router-run-code). |
 | **Package installs** | `apk_add` installs packages by name from the official OpenWrt feeds on `downloads.openwrt.org` and from nowhere else: never a link, a local file, a custom feed or a mirror, and never with signature checks off. Nothing grants it by default. See [tools.md](tools.md#apk_add-installs-from-the-official-openwrt-feeds-only). |
 | **exec arguments** | `exec` runs a program only with an argument form its policy names. A program granted with no form runs with no arguments. See [tools.md](tools.md#exec-runs-only-the-argument-forms-its-grant-names). |
-| **Second factor** | A policy can put any of its tools behind the owner's unlock: a PIN, a code from an authenticator app, or both. One unlock opens a window, 15 minutes by default. See [below](#the-second-factor). |
+| **Second factor** | A policy can put any of its tools behind the owner's unlock: a PIN, a code from an authenticator app, or both. One unlock opens a window, 15 minutes by default. Guessing costs time that grows, and neither a restart nor a reboot forgives it. See [below](#the-second-factor). |
 | **High-impact changes** | For a client with an approval section, a change that opens the router to the internet, weakens the firewall, rewires the network, changes VPN routing, DNS or the time servers, opens Wi-Fi without a password into a trusted network, stops a guard service or reboots is held, whatever the window says, and runs only once the owner's client approves that one change with a PIN and a code. What only a person may do is refused outright. See [below](#high-impact-changes-wait-for-the-owners-approval). |
 | **Secrets in the audit log** | A value is written as `<redacted>` when the option, the section or the argument it travels in names a credential. Names stay visible, so the log still shows what changed. See [below](#the-audit-log-never-holds-a-secrets-value). |
 | **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
@@ -52,8 +52,8 @@ config policy
 	list   mfa_tools         'uci_apply'
 	option mfa_window        '15m'
 	option mfa_factor        'pin+totp'   # totp (default) | pin | pin+totp
-	option mfa_max_failures  '5'          # consecutive failed unlocks before a lockout
-	option mfa_lockout       '15m'        # how long unlocking is refused after that
+	option mfa_max_failures  '5'          # free tries in a row; the one that reaches this starts a delay
+	option mfa_lockout       '15m'        # the first delay; each failure after it doubles the wait, up to an hour
 ```
 
 `list mfa_tools '*'` covers every tool the policy grants. It is off unless configured, so a policy
@@ -79,8 +79,8 @@ mfa_unlock {"code":"552575"}   -> code already used
 
 - The second factor is checked after authorisation, so an unauthorised caller learns nothing about
   which tools are gated.
-- Codes are single-use. Unlocks are per client and held in memory only, so a daemon restart
-  re-locks everything.
+- Codes are single-use, across a restart too: the last accepted time-step is on the disk. Unlocks
+  are per client and held in memory only, so a daemon restart re-locks everything.
 - Standard RFC 6238 (SHA-1, 6 digits, 30 s), checked against the RFC's own test vectors, so any
   authenticator app works. A code is accepted for one 30-second step before its own and two after
   it, which is 60 seconds past the moment the app stops showing it: time to type a PIN first. It is
@@ -136,16 +136,79 @@ openwrt-mcp pin clear claude-code
   policy names. With `pin+totp` the PIN is checked first, so a wrong PIN never spends the owner's
   code, and no refusal says which factor was wrong.
 
-A PIN is short, so the throttle is what protects it. After `mfa_max_failures` consecutive failed
-unlocks the client is refused for `mfa_lockout`: every attempt in that time is rejected without
-looking at any factor and without counting, and the refusal says when it ends. A success resets the
-count.
+### Guessing costs time, and the time grows
+
+A PIN is short and a code is six digits, so the throttle is what protects them. `mfa_max_failures`
+tries in a row are free. The failure that reaches that limit costs a wait of `mfa_lockout`, each
+failure after it doubles the wait, and it stops at one try an hour (at `mfa_lockout`, if that is
+longer):
+
+| Failed tries in a row | Wait for the next try |
+|---|---|
+| 1 to 4 | none |
+| 5 | 15 minutes |
+| 6 | 30 minutes |
+| 7 and every one after | 1 hour |
+
+That is 30 tries in the first day and 24 a day after it. A try inside a wait is refused without
+looking at any factor, without counting and without writing anything, and the refusal says when the
+wait ends. The end of a wait gives one try, not the free ones back. A success resets the count, and
+so do 24 hours of uptime with no counted failure; a refused try does not keep the count alive.
 
 ```
 mfa_unlock {"pin":"0000"}   -> invalid credentials              (x5)
 mfa_unlock {"pin":"4821"}   -> too many failed attempts: unlocking is locked out until 2026-10-01T22:15:00Z
 mfa_lock {}                 -> Locked. The unlock window for claude-code is closed; ...
 ```
+
+**What is kept where.** `/etc/openwrt-mcp/throttle` (0600, carried across a firmware upgrade with the
+rest of the directory) holds one line per client: the failure count and the last accepted TOTP
+step. It holds no time. A router with no battery boots with an old clock and ntpd then jumps it, so
+a stored "not before" would be skipped by a jump forward, stretched by a wrong clock and reset by a
+forged time server. The moment of the next try lives in the daemon's memory on the monotonic clock
+instead, and a daemon that starts treats its own start as that moment:
+
+- **A restart or a reboot forgives nothing.** A client at or above the limit starts a fresh delay of
+  the length its count asks for, so a restart costs a guesser time and costs anyone at most one more
+  delay. The clock can jump either way without moving a wait. The 24 hours are uptime, and they start
+  again with the daemon.
+- **The count is on the disk before any factor is looked at**, and cleared on a success, so a process
+  that dies between the check and the write has not given a free guess. Each write goes to a
+  sidecar, which is synced, renamed over the file, and the directory synced.
+- **A corrupt record reads as the limit**: one first delay, neither a free pass nor a punishment. A
+  missing file reads as zero, which is a new install.
+- **A failed write keeps working from memory.** On a full overlay the daemon counts in memory, says so
+  once in the log, shows `throttle_persisted: false` in `status`, and writes again as soon as it
+  can. A full disk never becomes a refusal. A restart in that state goes back to the last count that
+  reached the disk.
+- **Tries made at the same moment** are taken one at a time, so none slips under the limit.
+
+**Who can clear a count.** Root, from the router:
+
+```sh
+openwrt-mcp mfa reset claude-code       # takes effect on a running daemon, with no restart
+```
+
+A new PIN or a new enrolment clears it too. The last accepted step survives a reset, so a spent code
+stays spent. No MCP client can reset a count: there is no tool for it, as there is none for `pair`
+or `allow`, and `mfa_lock` leaves the count alone.
+
+**A weak PIN.** `pin set` refuses the most common PINs, from a short built-in list: the free tries
+come first, so a PIN from the top of that list falls inside them whatever the delays are. A PIN
+already on file keeps working.
+
+`@decided 2026-11-07`: there is no overall cap on the tries. The count is per client and shared by
+whoever holds that client's token, so a cap that disables the factor would let a guesser turn a
+stolen token into a lockout that stays after the guessing stops, and on a home router that means
+going to the router. With delays alone, a lockout does not outlive the attack: once the guessing
+stops, the wait is over within the hour and a day clears the count. While the guessing goes on, it
+takes the tries as they come up, and the owner gets in with `mfa reset` from the router, or with a
+new PIN. This is a deliberate departure from the limit in NIST SP 800-63B-4 section 3.2.2, which
+stops consecutive failures at 100 at most by disabling the authenticator and offers a growing wait
+of up to an hour only as an addition to that limit. openwrt-mcp claims no conformance with it. The
+price of the choice falls on one configuration: a four-digit PIN as the only factor can be walked
+through in 14 months of unbroken guessing at 24 tries a day. `pin+totp`, or a longer PIN, puts that
+out of reach.
 
 ## High-impact changes wait for the owner's approval
 
@@ -282,7 +345,7 @@ the held changes are listed by `action_list`.
 
 ## The audit log never holds a secret's value
 
-Every call is written to `/etc/openwrt-mcp/audit.jsonl` with its client, tool, scope and arguments,
+Every call is recorded in `/etc/openwrt-mcp/audit.jsonl` with its client, tool, scope and arguments,
 and an outcome: `OK`, `DENIED`, `ERROR` or `HELD`. `DENIED` is a distinct outcome from `ERROR`: "we
 said no" is not "it broke". Calls are recorded at the wrapper, so a new tool is logged without opting
 in, and the recorder redacts by name rather than trusting callers, so a new tool cannot leak a
@@ -306,6 +369,18 @@ log holds arguments and a summary, never what a tool returns. At 16 MB (`audit_m
 moves to `audit.jsonl.1`, and one generation is kept. The approver's answered `action_list`, which it
 polls every few seconds, is the one call left out, so the log stays readable and the flash is
 spared; a refused listing is kept.
+
+Some refusals cost the caller nothing and can be repeated as fast as a loop runs. A line each would
+wear the flash and let a guesser rotate the record of what it did out of the log, so a run of them
+is folded: the first is written in full, the rest are counted, and one summary line with a `folded`
+count follows. That holds for a try refused inside a delay (`mfa_unlock` and `action_approve`; the
+run ends with the delay), for a bad or missing bearer token, which any process on the router can
+send, and for an `mfa_unlock` turned away before any try, which the agent's own token can send (those
+two runs last 15 minutes, so a flood costs two lines per 15 minutes, whatever its size). A counted
+failure always has a line of its own, and the delays ration those. Summaries are written within a
+minute of a run's end, and when the daemon is told to stop. The folding covers those refusals and no
+others: a client with a valid token can still fill the log with calls of its own, each with a
+line, and those lines name it.
 
 ## `uci_get` never returns a secret
 
@@ -372,13 +447,22 @@ openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities'
 | `uci_apply_refuses_code_exec` | 0.5.0.3 | `uci_apply` never makes the router run code |
 | `apk_add_official_feed_only` | 0.5.0.4 | `apk_add` installs from the official feeds only |
 | `actions_held_for_approval` | 0.5.0.5 | high-impact changes wait for the owner's approval |
+| `second_factor_throttle_persisted` | 0.5.0.8 | the guess throttle outlives a restart and a reboot, and the disk holds no time |
 
 The same report gives each client's `mfa` object (`factor`, `totp_enrolled`, `totp_pending`,
-`pin_set`, and `live_state`) and, for a client with an approval section, its `approval` object.
-`status` runs as its own process, so it reads the factor and enrolment from files and reports
-`live_state: false`; `unlocked_until`, `locked_out_until` and `failures` are filled in only by a
-process that holds the daemon's own state. There is no channel from `status` into the daemon, on
-purpose.
+`pin_set`, `failures`, and `live_state`) and, for a client with an approval section, its `approval`
+object. `status` runs as its own process, so it reads the factor, the enrolment and the failure count
+from files and reports `live_state: false`; `unlocked_until` and `locked_out_until` are filled in only
+by a process that holds the daemon's own state. There is no control channel from `status` into the
+daemon, on purpose. What `status` does read from it is `/health`, the check that it is running, and
+that answer adds the line `throttle_persisted: false` while the count is not reaching the disk: that
+is the report's top-level `throttle_persisted`, and `true` means no failed write is known.
+
+For the owner's chat, `action_list` carries a `throttle` list beside the held changes: per client it
+approves, `failures`, `limit`, `locked_out_until`, `refused` (tries refused inside the current delay)
+and `persisted`. Tries reach that list only through the owner's token or from a client with no
+approval section, since the agent's own token spends none, which makes it what a plugin needs to
+tell the owner that someone else is trying. The agent's own view carries none of it.
 
 ## How it behaves at its edges
 
@@ -391,12 +475,14 @@ purpose.
   forms it needs) keep the policy engine meaningful; an unscoped one reduces it to an audit trail.
 - **An argument form is a pattern, not a program.** `sh -c *` is a shell, and a `*` in an argument
   matches any text, dots and dashes included, within that one argument. Exact forms are safer.
-- **Unlock windows, failure counts and lockouts live in the daemon's memory only**, so a restart
-  re-locks everything and also forgives a lockout.
-- **The lockout is per client** and anyone holding that client's bearer token can trigger it: five
-  wrong guesses deny the owner an unlock for `mfa_lockout`. It grants the guesser nothing, and the
-  owner lifts it at once by setting a new PIN or re-enrolling, which closes the old window and
-  clears the throttle on a running daemon.
+- **Unlock windows live in the daemon's memory only**, so a restart re-locks everything. Failure
+  counts are on the disk, and a restart forgives none of them.
+- **The throttle is per client** and anyone holding that client's bearer token can trigger it: five
+  wrong guesses deny the owner an unlock for `mfa_lockout`, and a guesser who keeps going takes each
+  try as it comes up. It grants the guesser nothing, and a lockout does not outlive the attack. The
+  owner lifts it at once from the router with `openwrt-mcp mfa reset`, or by setting a new PIN or
+  re-enrolling, which also closes the old window. Away from the router, with no way in, the wait is
+  what is left, and it ends with the guessing.
 - **What is held is decided by named rules** over the state a change leaves, and a rule is a list.
   A change whose danger lies somewhere no rule reads runs in an unlock window, with the rollback: a
   Wi-Fi interface's `network` (an access point or a station joined to any network, the internet

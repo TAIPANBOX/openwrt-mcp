@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,7 +23,7 @@ import (
 // Not "0.5.0-taipanbox.2": the package version is taken from this line, and apk accepts only
 // digits, dots and its own suffixes, so that string would not build an .apk. 0.5.0.2 sorts
 // after 0.5.0 for both apk and opkg, and before an upstream 0.5.1.
-var version = "0.5.0.7"
+var version = "0.5.0.8"
 
 const sourceURL = "https://github.com/GlassOnTin/openwrt-mcp"
 
@@ -55,6 +57,12 @@ func main() {
 	case "serve":
 		s, err := NewServer(*configPath, *statePath)
 		must(err)
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			s.housekeep(stop, time.NewTicker(time.Minute).C)
+			os.Exit(0)
+		}()
 		must(s.Serve())
 
 	case "pair":
@@ -130,13 +138,16 @@ func main() {
 		case "activate":
 			must(runMFAActivate(os.Stdout, ms, args[2:], time.Now()))
 
+		case "reset":
+			must(runMFAReset(os.Stdout, ms, args[2:]))
+
 		case "status", "":
 			cfg, err := LoadConfig(*configPath)
 			must(err)
 			writeMFAStatus(os.Stdout, ms, cfg)
 
 		default:
-			die("usage: openwrt-mcp mfa enrol <client> [--qr] [--json] [--pending] | mfa activate <client> <code> | mfa status")
+			die("usage: openwrt-mcp mfa enrol <client> [--qr] [--json] [--pending] | mfa activate <client> <code> | mfa reset <client> | mfa status")
 		}
 
 	case "pin":
@@ -228,6 +239,7 @@ func usage() {
   status   [--json] [--audit N]                daemon state, pairings, grants, recent audit
   mfa      enrol <client> [device] [--qr] [--json] [--pending]   optional TOTP second factor
            activate <client> <code> | status                      (--pending enrols into mfa.pending)
+           reset <client>                                         clear a client's failed tries
   pin      set <client> | clear <client>      owner PIN as a second factor (set reads stdin)
   version
 

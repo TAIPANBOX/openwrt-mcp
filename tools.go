@@ -466,8 +466,9 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"their PIN (send 'pin'), or both ('pin+totp'). Send exactly what the refusal from the "+
 			"gated tool asked for. One unlock opens a time-boxed window rather than gating every "+
 			"call, so ask the operator once and work normally until it expires. Codes are "+
-			"single-use. Repeated wrong answers lock unlocking for a while: do not guess, ask the "+
-			"operator. Does nothing unless the operator has set up a factor with "+
+			"single-use. Repeated wrong answers lock unlocking for a while, and each further wrong "+
+			"answer makes the wait longer, up to an hour: do not guess, ask the operator. A restart "+
+			"does not clear the wait. Does nothing unless the operator has set up a factor with "+
 			"'openwrt-mcp mfa enrol' or 'openwrt-mcp pin set'.",
 		func(in mfaUnlockIn) []string { return nil },
 		func(ctx context.Context, in mfaUnlockIn) (string, string, error) {
@@ -532,7 +533,8 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 		})
 
 	addTool(s, srv, client, "action_list",
-		"For the owner's client only: the held changes of the clients it approves, each with its card and hash.",
+		"For the owner's client only: the held changes of the clients it approves, each with its card and "+
+			"hash, and the guess throttle of those clients (failures, limit, locked_out_until, refused, persisted).",
 		func(in actionStatusIn) []string { return nil },
 		func(ctx context.Context, in actionStatusIn) (string, string, error) { return s.actionList(client) })
 
@@ -647,15 +649,28 @@ var ungated = map[string]bool{"ubus_list": true, "mfa_unlock": true, "mfa_lock":
 func (s *Server) unlockTarget(caller, named string) (string, error) {
 	if named != "" && named != caller {
 		if !s.cfg().approves(caller, named) {
-			return "", &refusedError{"refused: only the owner's client of " + named + " opens its window"}
+			return "", &unlockRefusal{&refusedError{"refused: only the owner's client of " + named + " opens its window"}, caller}
 		}
 		return named, nil
 	}
 	if a := s.cfg().approvalFor(caller); a != nil {
-		return "", &refusedError{"refused: " + caller + "'s window is opened by the owner's client (" + a.Approver +
-			"), never by " + caller + " itself; ask the owner to unlock in the chat. Nothing was tried."}
+		return "", &unlockRefusal{&refusedError{"refused: " + caller + "'s window is opened by the owner's client (" + a.Approver +
+			"), never by " + caller + " itself; ask the owner to unlock in the chat. Nothing was tried."}, caller}
 	}
 	return caller, nil
+}
+
+// unlockRefusal is an mfa_unlock turned away before any try. It counts nothing, so the agent's own
+// token can repeat it for free, and its audit lines are folded like any other free refusal.
+type unlockRefusal struct {
+	*refusedError
+	caller string
+}
+
+func (e *unlockRefusal) Unwrap() error { return e.refusedError }
+
+func (e *unlockRefusal) foldNote() foldNote {
+	return foldNote{key: "unlock-refused:" + e.caller, what: "mfa_unlock calls turned away from " + e.caller}
 }
 
 // addTool registers one tool behind the shared policy+audit gate. scopeOf derives the policy
@@ -688,6 +703,7 @@ func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string
 					ev.Args = m
 				}
 			}
+			var fold *foldNote
 			finish := func(res *mcp.CallToolResult, outcome Outcome, summary, errMsg string) (*mcp.CallToolResult, any, error) {
 				ev.Outcome, ev.Summary, ev.Error = outcome, summary, errMsg
 				ev.Duration = time.Since(started).Milliseconds()
@@ -695,7 +711,11 @@ func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string
 				// flash for each answered listing would wear the flash and drown the log. What it
 				// lists is held in memory and changes nothing, and a refused listing is still kept.
 				if !(name == "action_list" && outcome == OutcomeOK) {
-					s.audit.Record(ev)
+					if fold != nil {
+						s.audit.Fold(*fold, ev)
+					} else {
+						s.audit.Record(ev)
+					}
 				}
 				return res, nil, nil
 			}
@@ -710,7 +730,7 @@ func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string
 			// mfa_unlock is exempt for the obvious reason: it is how you satisfy the second
 			// factor, so gating it behind the second factor would be a deadlock. It is safe
 			// to leave open because it grants nothing on its own -- without the right
-			// factors it does nothing but record a failed attempt, and the lockout caps those.
+			// factors it does nothing but record a failed attempt, and the delays ration those.
 			// mfa_lock is exempt because it can only remove access, never add it.
 			//
 			// The action_* tools are exempt too: action_status and action_withdraw only read or
@@ -758,6 +778,7 @@ func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string
 			}
 
 			out, summary, err := fn(ctx, in)
+			fold = foldOf(err)
 			if err != nil && isRefused(err) {
 				// A refusal by rule (uci_apply's code-execution check) is a DENIED, like a policy
 				// refusal, not an ERROR: nothing broke, the daemon said no.

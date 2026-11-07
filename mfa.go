@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -91,11 +92,12 @@ func (p *Policy) unlockPolicy() unlockPolicy {
 // policy's decision; a field the policy does not ask for is ignored, never checked.
 type unlockAttempt struct{ Code, PIN string }
 
-// mfaState is the live, in-memory state of one client, as the daemon holds it.
+// mfaState is the live state of one client, as the daemon holds it.
 type mfaState struct {
 	UnlockedUntil  time.Time // zero when locked
-	LockedOutUntil time.Time // zero when not locked out
+	LockedOutUntil time.Time // zero when no delay is running
 	Failures       int       // consecutive failed unlocks
+	Refused        int       // tries refused inside the current delay
 }
 
 // defaultMFAWindow is how long one code keeps the gated tools open.
@@ -115,11 +117,14 @@ type MFAStore struct {
 	secrets map[string]string    // client -> base32 secret
 	unlocks map[string]time.Time // client -> unlocked until
 	lastCtr map[string]uint64    // client -> last accepted time-step, for replay
+	pinFP   map[string]string    // client -> fingerprint of the PIN record last seen
 
-	// Throttle on guessing. Runtime state like unlocks: in memory, per client, gone on restart.
-	fails       map[string]int       // client -> consecutive failed unlocks
-	lockedUntil map[string]time.Time // client -> unlocking refused until
-	pinFP       map[string]string    // client -> fingerprint of the PIN record last seen
+	// Throttle on guessing (throttle.go). The count and the step are on the disk; the moment of
+	// the next try is here, on the monotonic clock, and nowhere else.
+	thr           map[string]*throttleEntry
+	unsaved       atomic.Bool          // the last write of the throttle failed
+	mono          func() time.Duration // since this store was loaded; never the wall clock
+	writeThrottle func(path string, data []byte) error
 }
 
 // reloadLocked re-reads the secret file when it has changed on disk. Callers hold m.mu.
@@ -129,9 +134,9 @@ type MFAStore struct {
 // enrolled client as "invalid" -- with no hint that a restart is what it wants. `allow`
 // already takes effect on a running daemon; enrolment has to behave the same way.
 //
-// Unlocks and replay counters are runtime state and survive a reload, except for a client
-// whose secret actually changed: rotating a secret is what you do when it may be compromised,
-// so any window opened under the old one must close.
+// Unlocks and replay counters survive a reload, except for a client whose secret actually
+// changed: rotating a secret is what you do when it may be compromised, so any window opened
+// under the old one must close.
 func (m *MFAStore) reloadLocked() {
 	m.reloadSecretsLocked()
 	m.reloadPINsLocked()
@@ -143,8 +148,7 @@ func (m *MFAStore) reloadLocked() {
 func (m *MFAStore) forgetLocked(client string) {
 	delete(m.unlocks, client)
 	delete(m.lastCtr, client)
-	delete(m.fails, client)
-	delete(m.lockedUntil, client)
+	m.clearThrottleLocked(client)
 }
 
 // reloadPINsLocked is the PIN-side twin of the above: a PIN set, rotated or cleared by the
@@ -287,14 +291,20 @@ func parseMFAFile(path string) (map[string]string, error) {
 }
 
 func LoadMFA(path string) (*MFAStore, error) {
+	// time.Since reads the monotonic clock: epoch carries a monotonic reading, so a step of the
+	// wall clock moves nothing measured from it.
+	epoch := time.Now()
 	m := &MFAStore{
 		path:    path,
 		secrets: map[string]string{},
 		unlocks: map[string]time.Time{},
 		lastCtr: map[string]uint64{},
 
-		fails:       map[string]int{},
-		lockedUntil: map[string]time.Time{},
+		thr:  map[string]*throttleEntry{},
+		mono: func() time.Duration { return time.Since(epoch) },
+		writeThrottle: func(path string, data []byte) error {
+			return atomicWriteFile(path, data, throttleFileMode)
+		},
 	}
 	pins, err := LoadPINs(filepath.Join(filepath.Dir(path), "pin"))
 	if err != nil {
@@ -302,6 +312,12 @@ func LoadMFA(path string) (*MFAStore, error) {
 	}
 	m.pins = pins
 	m.pinFP = pins.Fingerprints()
+	// A code spent before a restart stays spent after it.
+	for client, rec := range readThrottleFile(m.throttlePath()).recs {
+		if !rec.bad && rec.step > 0 {
+			m.lastCtr[client] = rec.step
+		}
+	}
 	fresh, err := parseMFAFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -313,6 +329,7 @@ func LoadMFA(path string) (*MFAStore, error) {
 	if st, err := os.Stat(path); err == nil {
 		m.mtime = st.ModTime()
 	}
+	m.applySpentStepsLocked()
 	return m, nil
 }
 
@@ -537,13 +554,33 @@ var (
 	errInvalidCreds = fmt.Errorf("invalid credentials")
 )
 
+// lockedOutError is a try refused inside a delay. Its words are a contract: hermes-openwrt's
+// plugin reads "locked out" and the time after "until", in this order, to tell the owner when
+// the next try is. until is the wall clock's reading of a wait measured on the monotonic one, so
+// it is words only: nothing decides by it.
+type lockedOutError struct {
+	client string
+	until  time.Time
+	ends   time.Duration // monotonic: the end of the delay, the same for every refusal inside it
+}
+
+func (e *lockedOutError) Error() string {
+	return "too many failed attempts: unlocking is locked out until " + e.until.Format(time.RFC3339)
+}
+
+func (e *lockedOutError) foldNote() foldNote {
+	return foldNote{key: "delay:" + e.client, what: "tries refused inside the delay of " + e.client, end: e.ends}
+}
+
 // Attempt checks the factors the policy names and, if every one passes, opens the window.
 //
-// What a failure costs is decided here and nowhere else. A failed attempt counts against the
-// client; reaching MaxFailures refuses every attempt for Lockout, without looking at any
-// factor and without counting, so the lockout neither extends itself nor lets a guesser learn
-// anything from it. Success resets the count. The error text never says which factor was
-// wrong: it depends only on the policy, so it cannot be used to guess a factor at a time.
+// What a failure costs is decided here and nowhere else (throttle.go has the scheme). A client
+// inside a delay is refused without looking at any factor, without counting and without writing,
+// so a refusal neither extends the delay nor lets a guesser learn anything from it. Otherwise the
+// try is counted, and that count is on the disk before any factor is looked at: a process that
+// dies between the check and the write must not have given a free guess. Success clears the
+// count. The error text never says which factor was wrong: it depends only on the policy, so it
+// cannot be used to guess a factor at a time.
 //
 // The one place that reads differently is a TOTP-only policy, which keeps the messages it
 // always had ("invalid code", "code already used"): with a single factor there is nothing to
@@ -551,7 +588,7 @@ var (
 //
 // m.mu is held across the PIN derivation. That serialises PIN guesses, which is a feature
 // (two parallel attempts cannot both slip under the failure limit), and it is bounded: a
-// client past its limit is refused before any derivation happens.
+// client inside a delay is refused before any derivation happens.
 func (m *MFAStore) Attempt(client string, in unlockAttempt, up unlockPolicy, now time.Time) (time.Time, error) {
 	return m.attempt(client, in, up, now, true)
 }
@@ -572,24 +609,22 @@ func (m *MFAStore) attempt(client string, in unlockAttempt, up unlockPolicy, now
 	defer m.mu.Unlock()
 	m.reloadLocked()
 
-	if until, locked := m.lockedUntil[client]; locked {
-		if now.Before(until) {
-			return time.Time{}, fmt.Errorf("too many failed attempts: unlocking is locked out until %s",
-				until.Format(time.RFC3339))
-		}
-		// The lockout has run its course: the next failure is the first of a fresh count.
-		delete(m.lockedUntil, client)
-		delete(m.fails, client)
+	mono := m.mono()
+	e := m.entryLocked(client, up, m.syncThrottleLocked(mono), mono)
+	if wait := e.wait(up, mono); wait > 0 {
+		e.refused++
+		return time.Time{}, &lockedOutError{client: client, until: now.Add(wait), ends: mono + wait}
 	}
 
+	e.fails++
+	_ = m.saveThrottleLocked(mono)
+
 	if err := m.checkFactorsLocked(client, in, up.Factor, now); err != nil {
-		m.fails[client]++
-		if m.fails[client] >= up.MaxFailures {
-			m.lockedUntil[client] = now.Add(up.Lockout)
-		}
+		e.lastFail, e.refused = m.mono(), 0
 		return time.Time{}, err
 	}
-	delete(m.fails, client)
+	e.fails, e.lastFail, e.refused = 0, 0, 0
+	_ = m.saveThrottleLocked(m.mono())
 	if !open {
 		return time.Time{}, nil
 	}
@@ -672,23 +707,33 @@ func (m *MFAStore) UnlockedUntil(client string, now time.Time) (time.Time, bool)
 	return until, true
 }
 
-// State reports what the daemon currently holds for a client: an open window, a lockout and
-// the running failure count. It is read-only and only ever true of the process that holds
-// the attempts, which is why `status` run as a separate process cannot show it.
+// State reports what the daemon currently holds for a client: an open window, a delay and the
+// running failure count. It is read-only, and the delay is only ever known to the process that
+// holds the attempts, which is why `status` run as a separate process cannot show it.
 func (m *MFAStore) State(client string, now time.Time) mfaState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.stateLocked(client, m.policyLocked(client), now)
+}
+
+// StateUnder is State for a caller that knows the client's policy, which after a restart the
+// store does not until the first try.
+func (m *MFAStore) StateUnder(client string, up unlockPolicy, now time.Time) mfaState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stateLocked(client, up.withDefaults(), now)
+}
+
+func (m *MFAStore) stateLocked(client string, up unlockPolicy, now time.Time) mfaState {
 	var st mfaState
 	if until, ok := m.unlocks[client]; ok && now.Before(until) {
 		st.UnlockedUntil = until
 	}
-	until, locked := m.lockedUntil[client]
-	if locked && now.Before(until) {
-		st.LockedOutUntil = until
-	}
-	// An expired lockout is spent, and the count it was holding with it.
-	if !locked || now.Before(until) {
-		st.Failures = m.fails[client]
+	mono := m.mono()
+	e := m.entryLocked(client, up, m.syncThrottleLocked(mono), mono)
+	st.Failures, st.Refused = e.fails, e.refused
+	if wait := e.wait(up, mono); wait > 0 {
+		st.LockedOutUntil = now.Add(wait)
 	}
 	return st
 }
@@ -697,7 +742,7 @@ func (m *MFAStore) State(client string, now time.Time) mfaState {
 func (m *MFAStore) PINSet(client string) bool { return m.pins.Has(client) }
 
 // Lock closes the window immediately -- the "I am done, re-lock it" path -- and reports
-// whether one was open. It deliberately leaves the failure count and any lockout alone: it
+// whether one was open. It deliberately leaves the failure count and any delay alone: it
 // is a convenience for the owner, never a way to reset the throttle.
 func (m *MFAStore) Lock(client string) bool { return m.LockAt(client, time.Now()) }
 
@@ -772,8 +817,13 @@ func writeMFAStatus(w io.Writer, ms *MFAStore, cfg *Config) {
 			continue
 		}
 		up := p.unlockPolicy()
-		fmt.Fprintf(w, "  policy %s requires %s for: %s (window %s, locked out %s after %d failures)\n",
-			p.Client, up.Factor, strings.Join(p.MFATools, ", "), up.Window, up.Lockout, up.MaxFailures)
+		fmt.Fprintf(w, "  policy %s requires %s for: %s (window %s, locked out %s after %d failures), each further failure longer, up to %s\n",
+			p.Client, up.Factor, strings.Join(p.MFATools, ", "), up.Window, up.Lockout, up.MaxFailures,
+			max(throttleCeiling, up.Lockout))
+		if n := ms.RecordedFailures(p.Client, up); n > 0 {
+			fmt.Fprintf(w, "  %q has %d failed tries on record. A success clears them; so does: openwrt-mcp mfa reset %s\n",
+				p.Client, n, p.Client)
+		}
 		if (up.Factor == factorTOTP || up.Factor == factorPINTOTP) && !ms.Enrolled(p.Client) {
 			fmt.Fprintf(w, "  WARNING: %q has no enrolled secret, so those tools cannot be unlocked.\n"+
 				"           Run: openwrt-mcp mfa enrol %s\n", p.Client, p.Client)

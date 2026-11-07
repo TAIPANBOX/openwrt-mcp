@@ -205,6 +205,7 @@ func TestAWrongPINDoesNotBurnTheTOTPCounter(t *testing.T) {
 
 func TestLockoutBoundaries(t *testing.T) {
 	m, _ := enrolled(t, "4821", "a")
+	clk := useClock(m)
 	up := unlockPolicy{Factor: factorPIN, Window: time.Minute, MaxFailures: 3, Lockout: 10 * time.Minute}
 	bad := unlockAttempt{PIN: "0000"}
 	good := unlockAttempt{PIN: "4821"}
@@ -242,6 +243,7 @@ func TestLockoutBoundaries(t *testing.T) {
 
 	// During the lockout even the right PIN is refused, and the refusal names the end time.
 	for _, at := range []time.Duration{0, time.Second, 5 * time.Minute, 10*time.Minute - time.Nanosecond} {
+		clk.set(at)
 		_, err := m.Attempt("a", good, up, t0.Add(at))
 		if err == nil {
 			t.Fatalf("unlocked %v into a lockout", at)
@@ -251,6 +253,7 @@ func TestLockoutBoundaries(t *testing.T) {
 		}
 	}
 	// Refused attempts are not counted and do not extend the lockout.
+	clk.set(9 * time.Minute)
 	if st := m.State("a", t0.Add(9*time.Minute)); st.Failures != 3 || !st.LockedOutUntil.Equal(end) {
 		t.Errorf("refused attempts changed the state: %+v", st)
 	}
@@ -259,6 +262,7 @@ func TestLockoutBoundaries(t *testing.T) {
 	}
 
 	// The instant it ends, the right PIN works.
+	clk.set(10 * time.Minute)
 	if _, err := m.Attempt("a", good, up, end); err != nil {
 		t.Fatalf("still locked out at the end instant: %v", err)
 	}
@@ -267,21 +271,25 @@ func TestLockoutBoundaries(t *testing.T) {
 	}
 }
 
-func TestAfterALockoutTheCountStartsAgain(t *testing.T) {
+// The end of a delay gives one try, not a fresh count: what the free tries were before a delay
+// they are not after it. Failing that one try goes on from where the count was.
+func TestAfterADelayOneTryIsAllowed(t *testing.T) {
 	m, _ := enrolled(t, "4821", "a")
+	clk := useClock(m)
 	up := unlockPolicy{Factor: factorPIN, Window: time.Minute, MaxFailures: 2, Lockout: time.Minute}
 	bad := unlockAttempt{PIN: "0000"}
 	m.Attempt("a", bad, up, t0)
-	m.Attempt("a", bad, up, t0) // locked until t0+1m
+	m.Attempt("a", bad, up, t0) // locked until +1m
 
+	clk.set(time.Minute)
 	later := t0.Add(time.Minute)
-	m.Attempt("a", bad, up, later) // the lockout has ended: this is failure 1 of a fresh count
-	if st := m.State("a", later); !st.LockedOutUntil.IsZero() || st.Failures != 1 {
-		t.Fatalf("one failure after a lockout re-locked at once: %+v", st)
+	m.Attempt("a", bad, up, later) // the delay has ended: this is the third failure
+	st := m.State("a", later)
+	if st.Failures != 3 || !st.LockedOutUntil.Equal(later.Add(2*time.Minute)) {
+		t.Fatalf("one failure after a delay: %+v, want 3 failures and a delay of twice the first", st)
 	}
-	m.Attempt("a", bad, up, later)
-	if st := m.State("a", later); st.LockedOutUntil.IsZero() {
-		t.Error("two fresh failures did not lock again")
+	if _, err := m.Attempt("a", bad, up, later); err == nil || !strings.Contains(err.Error(), "locked out") {
+		t.Errorf("a second try straight after a delay's one try: %v", err)
 	}
 }
 
@@ -289,6 +297,7 @@ func TestAfterALockoutTheCountStartsAgain(t *testing.T) {
 // learns nothing and that nobody's replay counter moves.
 func TestALockoutChecksNoFactor(t *testing.T) {
 	m, _ := enrolled(t, "4821", "a")
+	clk := useClock(m)
 	up := unlockPolicy{Factor: factorTOTP, Window: time.Minute, MaxFailures: 1, Lockout: 20 * time.Second}
 	m.Attempt("a", unlockAttempt{Code: wrongCode(t, m, "a", t0)}, up, t0) // locks at once
 
@@ -298,6 +307,7 @@ func TestALockoutChecksNoFactor(t *testing.T) {
 	}
 	// The same code, still inside its acceptance span once the lockout is over, is good. If
 	// the refused attempt had consumed it, this would say "already used".
+	clk.set(20 * time.Second)
 	if _, err := m.Attempt("a", unlockAttempt{Code: code}, up, t0.Add(20*time.Second)); err != nil {
 		t.Fatalf("the refused attempt consumed the code: %v", err)
 	}

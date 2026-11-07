@@ -118,6 +118,27 @@ func runMFAActivate(out io.Writer, ms *MFAStore, args []string, now time.Time) e
 	return nil
 }
 
+// runMFAReset implements `mfa reset <client>`. It is a CLI command and no tool, like pair and
+// allow: the state directory is root's, so this is root's, and no MCP client can reach it.
+func runMFAReset(out io.Writer, ms *MFAStore, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: openwrt-mcp mfa reset <client>")
+	}
+	if err := validClientName(args[0]); err != nil {
+		return err
+	}
+	was, err := ms.ResetThrottle(args[0])
+	if err != nil {
+		return fmt.Errorf("the throttle of %q could not be saved: %w", args[0], err)
+	}
+	if was == 0 {
+		fmt.Fprintf(out, "%q has no failed tries on record; nothing to reset.\n", args[0])
+		return nil
+	}
+	fmt.Fprintf(out, "Cleared %d failed tries for %q. It takes effect on a running daemon without a restart.\n", was, args[0])
+	return nil
+}
+
 // indent prefixes every non-empty line.
 func indent(s, prefix string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")

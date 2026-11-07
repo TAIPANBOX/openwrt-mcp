@@ -30,7 +30,7 @@ set -eu
 # These names are the binding to features/apk-packaging.feature. Each scenario there
 # names the check that proves it, and CI asserts the two lists agree in both directions,
 # so a scenario cannot lose its check and a check cannot lose its scenario.
-CHECKS='check_format_is_not_an_archive check_installs check_path_parity check_modes check_service_enabled check_config_survives check_clean_removal check_arch_is_honoured'
+CHECKS='check_format_is_not_an_archive check_installs check_path_parity check_modes check_service_enabled check_config_survives check_upgrade_restarts check_upgrade_keeps_boot_start check_clean_removal check_arch_is_honoured'
 
 if [ "${1:-}" = "--selftest" ]; then
 	n=0
@@ -64,7 +64,10 @@ default_artefact() {
 }
 
 IPK=${IPK:-$(default_artefact 'openwrt-mcp_*.ipk')}
-APK=${APK:-$(default_artefact 'openwrt-mcp-*.apk')}
+APK=${APK:-$(default_artefact 'openwrt-mcp-*-r1.apk')}
+# The same package one revision on, because only a different version makes apk replace rather
+# than reinstall, and only a replacement runs post-upgrade.
+APK_NEXT=${APK_NEXT:-$(default_artefact 'openwrt-mcp-*-r2.apk')}
 # OpenWrt publishes its OCI platform string as the package architecture; plain
 # "linux/arm64" fails with "no matching manifest" even though it is the same silicon.
 ROOTFS_IMAGE=${ROOTFS_IMAGE:-openwrt/rootfs:aarch64_generic-25.12.4}
@@ -77,11 +80,12 @@ trap 'rm -rf "$WORK"' EXIT
 missing=""
 [ -n "$IPK" ] && [ -f "$IPK" ] || missing="$missing .ipk (build it: make ipk)"
 [ -n "$APK" ] && [ -f "$APK" ] || missing="$missing .apk (build it: make apk)"
+[ -n "$APK_NEXT" ] && [ -f "$APK_NEXT" ] || missing="$missing r2 .apk (build it: PKGREL=2 ./mkapk.sh <binary> <version> [arch])"
 if [ -n "$missing" ]; then
 	echo "FAIL: artefacts exist: missing$missing"
 	exit 1
 fi
-echo "PASS: artefacts exist: ipk=$IPK apk=$APK"
+echo "PASS: artefacts exist: ipk=$IPK apk=$APK next=$APK_NEXT"
 
 # Extract the file set the .ipk actually ships, so the container can diff against it
 # without needing tar or the .ipk itself inside the rootfs image.
@@ -113,12 +117,14 @@ echo "-- container checks: $ROOTFS_IMAGE ($PLATFORM) --"
 if ! docker run --rm -i --platform "$PLATFORM" \
 	-v "$WORK:/work" \
 	-v "$APK:/openwrt-mcp.apk:ro" \
+	-v "$APK_NEXT:/openwrt-mcp-next.apk:ro" \
 	-v "$IPK:/openwrt-mcp.ipk:ro" \
 	"$ROOTFS_IMAGE" /bin/sh -s <<'CONTAINER_EOF'
 set -eu
 
 PKG=openwrt-mcp
 APK=/openwrt-mcp.apk
+APK_NEXT=/openwrt-mcp-next.apk
 
 # A booted router has /var as a symlink to /tmp and /var/lock already created, so
 # rc.common's enable can take its lock. A bare rootfs container has neither, and without
@@ -133,29 +139,29 @@ mkdir -p /var/lock /var/run /var/state
 # it has to be red, or mkapk.sh reaching for apk-tools would be unjustified ceremony.
 cp /openwrt-mcp.ipk /tmp/renamed.apk
 if apk add --allow-untrusted /tmp/renamed.apk >/tmp/renamed.out 2>&1; then
-	echo "FAIL [1/8] check_format_is_not_an_archive: apk ACCEPTED a renamed .ipk"
+	echo "FAIL [1/10] check_format_is_not_an_archive: apk ACCEPTED a renamed .ipk"
 	exit 1
 fi
 if ! grep -q 'format error' /tmp/renamed.out; then
-	echo "FAIL [1/8] check_format_is_not_an_archive: refused, but not for a format reason:"
+	echo "FAIL [1/10] check_format_is_not_an_archive: refused, but not for a format reason:"
 	cat /tmp/renamed.out
 	exit 1
 fi
 rm -f /tmp/renamed.apk
-echo "PASS [1/8] check_format_is_not_an_archive"
+echo "PASS [1/10] check_format_is_not_an_archive"
 
 # ---- 2. installs and registers ----
 # Not signed by a repo key, only built locally -- that is expected for a package that
 # has not been published anywhere, not a sign something is wrong with it.
 if ! apk add --allow-untrusted "$APK"; then
-	echo "FAIL [2/8] check_installs: apk add rejected the package"
+	echo "FAIL [2/10] check_installs: apk add rejected the package"
 	exit 1
 fi
 if ! apk info -e "$PKG" >/dev/null 2>&1; then
-	echo "FAIL [2/8] check_installs: apk add succeeded but the package is not registered"
+	echo "FAIL [2/10] check_installs: apk add succeeded but the package is not registered"
 	exit 1
 fi
-echo "PASS [2/8] check_installs"
+echo "PASS [2/10] check_installs"
 
 # ---- 3. path-set parity ----
 # "apk info -L" prints a header line ending in "contains:" before the file list, and
@@ -170,7 +176,7 @@ apk info -L "$PKG" \
 # busybox with no diff applet, and a gate that needs a tool the target does not have is
 # a gate that does not run.
 if [ "$(cat /work/ipk-files)" != "$(cat /work/apk-files)" ]; then
-	echo "FAIL [3/8] check_path_parity: apk and ipk disagree on the file set"
+	echo "FAIL [3/10] check_path_parity: apk and ipk disagree on the file set"
 	# Both lists in full rather than only the differing lines. A package this size is a
 	# handful of paths, and a reader chasing a parity failure wants to see what each
 	# side actually shipped, not a delta they then have to reconstruct.
@@ -180,34 +186,34 @@ if [ "$(cat /work/ipk-files)" != "$(cat /work/apk-files)" ]; then
 	sed 's/^/  /' /work/apk-files
 	exit 1
 fi
-echo "PASS [3/8] check_path_parity"
+echo "PASS [3/10] check_path_parity"
 
 # ---- 4. modes ----
 # A non-executable binary is a router that cannot exec the service at all; a config
 # file that is not 0644 is either unreadable to something that expects it, or
 # writable in a way opkg's install never allowed.
 if [ ! -x /usr/bin/openwrt-mcp ]; then
-	echo "FAIL [4/8] check_modes: /usr/bin/openwrt-mcp is not executable"
+	echo "FAIL [4/10] check_modes: /usr/bin/openwrt-mcp is not executable"
 	exit 1
 fi
 # No "stat -c" here -- this rootfs is busybox, not coreutils -- so parse busybox's
 # "ls -l" instead. The permission string is always the first field.
 perm=$(ls -l /etc/config/openwrt-mcp | awk '{print $1}')
 if [ "$perm" != "-rw-r--r--" ]; then
-	echo "FAIL [4/8] check_modes: /etc/config/openwrt-mcp is $perm, want -rw-r--r-- (644)"
+	echo "FAIL [4/10] check_modes: /etc/config/openwrt-mcp is $perm, want -rw-r--r-- (644)"
 	exit 1
 fi
-echo "PASS [4/8] check_modes"
+echo "PASS [4/10] check_modes"
 
 # ---- 5. service enabled ----
 # This file is procd's own enable marker. Its presence is what proves the postinst
 # script actually ran "/etc/init.d/openwrt-mcp enable", not just that the init script
 # was unpacked onto disk.
 if [ ! -e /etc/rc.d/S95openwrt-mcp ]; then
-	echo "FAIL [5/8] check_service_enabled: /etc/rc.d/S95openwrt-mcp is missing"
+	echo "FAIL [5/10] check_service_enabled: /etc/rc.d/S95openwrt-mcp is missing"
 	exit 1
 fi
-echo "PASS [5/8] check_service_enabled"
+echo "PASS [5/10] check_service_enabled"
 # The same postinst also calls "restart", which fails harmlessly here because there is
 # no procd running in a bare rootfs container. That failure is expected, not a package
 # fault, and it does not reach here as a failed install because the postinst's own
@@ -221,14 +227,70 @@ echo "$marker" >> /etc/config/openwrt-mcp
 # still exercises the failure that matters on a router: losing a live policy file on
 # any apk operation that touches an already-installed package, upgrade or not.
 if ! apk add --allow-untrusted --force-refresh "$APK"; then
-	echo "FAIL [6/8] check_config_survives: reinstall failed"
+	echo "FAIL [6/10] check_config_survives: reinstall failed"
 	exit 1
 fi
 if ! grep -qF "$marker" /etc/config/openwrt-mcp; then
-	echo "FAIL [6/8] check_config_survives: marker line lost after reinstall"
+	echo "FAIL [6/10] check_config_survives: marker line lost after reinstall"
 	exit 1
 fi
-echo "PASS [6/8] check_config_survives"
+echo "PASS [6/10] check_config_survives"
+
+# ---- 7 and 8. replacing a version ----
+# A reinstall of the same version, as above, runs nothing. Only a different version makes apk
+# replace the package, and then it runs post-upgrade and not post-install. What matters on a
+# router is what that script does to the service, and there is no procd here to ask, so a stand-in
+# for /etc/rc.common, the interpreter of every init script, writes down what it was told to do.
+cp /etc/rc.common /tmp/rc.common.real
+cat > /etc/rc.common <<'RC'
+#!/bin/sh
+echo "$2" >> /tmp/rc-actions
+[ "$2" = enabled ] && { [ -e /etc/rc.d/S95openwrt-mcp ]; exit; }
+exit 0
+RC
+: > /tmp/rc-actions
+if ! apk add --allow-untrusted "$APK_NEXT" >/tmp/upgrade.out 2>&1; then
+	cat /tmp/upgrade.out
+	echo "FAIL [7/10] check_upgrade_restarts: apk refused the next revision"
+	exit 1
+fi
+if grep -q 'post-install' /tmp/upgrade.out; then
+	cat /tmp/upgrade.out
+	echo "FAIL [7/10] check_upgrade_restarts: apk ran post-install on a replacement, which is not what this check knows"
+	exit 1
+fi
+if ! grep -qx restart /tmp/rc-actions; then
+	echo "FAIL [7/10] check_upgrade_restarts: the running daemon would stay on the old binary; apk said:"
+	cat /tmp/upgrade.out
+	echo "and the init script was told: $(cat /tmp/rc-actions)"
+	exit 1
+fi
+if [ ! -e /etc/rc.d/S95openwrt-mcp ]; then
+	echo "FAIL [7/10] check_upgrade_restarts: the replacement lost the start at boot"
+	exit 1
+fi
+echo "PASS [7/10] check_upgrade_restarts"
+
+# The owner switched the start at boot off: an upgrade leaves it off, and starts nothing.
+rm -f /etc/rc.d/S95openwrt-mcp
+: > /tmp/rc-actions
+if ! apk add --allow-untrusted "$APK" >/tmp/upgrade.out 2>&1; then
+	cat /tmp/upgrade.out
+	echo "FAIL [8/10] check_upgrade_keeps_boot_start: apk refused the other revision"
+	exit 1
+fi
+if ! grep -q 'post-upgrade' /tmp/upgrade.out; then
+	cat /tmp/upgrade.out
+	echo "FAIL [8/10] check_upgrade_keeps_boot_start: measured nothing: apk ran no post-upgrade"
+	exit 1
+fi
+if grep -qxE 'enable|restart|start' /tmp/rc-actions; then
+	echo "FAIL [8/10] check_upgrade_keeps_boot_start: the init script was told: $(cat /tmp/rc-actions)"
+	exit 1
+fi
+echo "PASS [8/10] check_upgrade_keeps_boot_start"
+cp /tmp/rc.common.real /etc/rc.common
+/etc/init.d/$PKG enable
 
 # ---- 7. the architecture in the metadata is honoured ----
 # For .ipk the architecture was in the filename, so a mismatch was visible. In apk it
@@ -243,10 +305,10 @@ if apk mkpkg --help >/dev/null 2>&1; then
 		--info "arch:$(cat /etc/apk/arch)x" --info license:MIT \
 		--files /tmp/wrongarch --output /tmp/wrongarch.apk >/dev/null 2>&1
 	if apk add --allow-untrusted /tmp/wrongarch.apk >/dev/null 2>&1; then
-		echo "FAIL [7/8] check_arch_is_honoured: apk installed a foreign-architecture package"
+		echo "FAIL [9/10] check_arch_is_honoured: apk installed a foreign-architecture package"
 		exit 1
 	fi
-	echo "PASS [7/8] check_arch_is_honoured"
+	echo "PASS [9/10] check_arch_is_honoured"
 else
 	# The rootfs ships apk-tools without mkpkg, so the wrong-arch package cannot be
 	# built here. Assert the installed package at least declares this router's arch,
@@ -254,21 +316,21 @@ else
 	want=$(cat /etc/apk/arch)
 	got=$(apk list --installed 2>/dev/null | grep "^openwrt-mcp-" | awk '{print $2}' | head -1)
 	if [ "$got" != "$want" ]; then
-		echo "FAIL [7/8] check_arch_is_honoured: package declares $got, router is $want"
+		echo "FAIL [9/10] check_arch_is_honoured: package declares $got, router is $want"
 		exit 1
 	fi
-	echo "PASS [7/8] check_arch_is_honoured (declared arch only; no mkpkg in this rootfs)"
+	echo "PASS [9/10] check_arch_is_honoured (declared arch only; no mkpkg in this rootfs)"
 fi
 # ---- 8. clean removal ----
 if ! apk del "$PKG"; then
-	echo "FAIL [8/8] check_clean_removal: apk del failed"
+	echo "FAIL [10/10] check_clean_removal: apk del failed"
 	exit 1
 fi
 if [ -e /usr/bin/openwrt-mcp ] || [ -e /etc/rc.d/S95openwrt-mcp ]; then
-	echo "FAIL [8/8] check_clean_removal: files remain after apk del"
+	echo "FAIL [10/10] check_clean_removal: files remain after apk del"
 	exit 1
 fi
-echo "PASS [8/8] check_clean_removal"
+echo "PASS [10/10] check_clean_removal"
 CONTAINER_EOF
 then
 	echo "FAIL: apk-side checks failed inside the container (see above)"

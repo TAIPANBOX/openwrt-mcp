@@ -34,15 +34,17 @@ the audit log. Nothing is granted by default.
 | `logread` | *(tool-level)* | The system log, up to 2000 recent lines, with an optional substring filter. Split out from `exec` so logs can be granted without a root shell. |
 | `wg_new_client` | `wireguard_server.<server section>`, or `wireguard_server` when unspecified | Issues a WireGuard client: keypair, next free tunnel address, a peer the vendor UI still lists, hot-added with `wg set` so live sessions stay up. Returns the config **and a UTF-8 QR** to scan. Emits a private key; see [below](#wg_new_client). |
 | `apk_add` | the package name, for each package named | Installs packages from the official OpenWrt feeds (OpenWrt 25.12 and newer), by name only. `dry_run` lists every package that would be installed or changed and installs nothing; see [below](#apk_add-installs-from-the-official-openwrt-feeds-only). |
-| `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how the factor is satisfied; it grants nothing without the right factors, and repeated failures lock it for a while. A client with an approval section never opens its own window; its approver opens it, with `client`. |
+| `mfa_unlock` | *(ungated)* | Supplies the owner's factors (`code`, `pin`, or both, as the policy's `mfa_factor` says) to open the second-factor window. Ungated because it is how the factor is satisfied; it grants nothing without the right factors, and repeated failures cost a wait that grows up to an hour and that a restart does not clear. A client with an approval section never opens its own window; its approver opens it, with `client`. |
 | `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it only removes access. The approver, with `client`, closes that client's window and rejects every change it has held. |
 | `action_status` | *(ungated)* | The client's own held changes: held, applied, failed, rejected, expired or withdrawn, with the outcome of one that ran. An applied `uci_apply` names its `uci_confirm` token. |
 | `action_withdraw` | *(ungated)* | Withdraws one of the client's own changes that still waits. |
-| `action_list` | *(the approval section)* | For the approver only: the held changes of the clients it approves, each with its card and hash. |
+| `action_list` | *(the approval section)* | For the approver only: the held changes of the clients it approves, each with its card and hash, and beside them a `throttle` list: per client, `failures`, `limit`, `locked_out_until`, `refused` and `persisted`, so the owner's chat can say that someone else is trying. |
 | `action_approve` | *(the approval section)* | For the approver only: approves one held change by its id and the hash of its card, with the owner's PIN and a current code. The change runs once, exactly as held. |
 | `action_reject` | *(the approval section)* | For the approver only: rejects one held change. Takes no factor. |
 
-How the second factor and held changes work: [security.md](security.md).
+How the second factor and held changes work: [security.md](security.md). `openwrt-mcp mfa reset
+<client>` clears a client's failed tries; it is a root command on the router and no tool, so no MCP
+client can reach it.
 
 ## Granting a tool
 

@@ -86,8 +86,30 @@ func NewServer(configPath, statePath string) (*Server, error) {
 		pending:    map[string]*pendingApply{},
 		held:       newHeldStore(),
 	}
+	s.audit.mono = mfa.mono // a delay's end is read on the clock it was set on
 	s.recoverPending()
 	return s, nil
+}
+
+// sweep is the daemon's minute: summaries of the runs that ended, a day of uptime forgotten on the
+// disk, a throttle write that failed tried again.
+func (s *Server) sweep() {
+	s.audit.Sweep()
+	s.mfa.Sweep()
+}
+
+// housekeep runs sweep on every tick until the daemon is told to stop. What is counted in a fold
+// exists only in memory, so it goes to the log on the way out.
+func (s *Server) housekeep(stop <-chan os.Signal, tick <-chan time.Time) {
+	for {
+		select {
+		case <-tick:
+			s.sweep()
+		case <-stop:
+			s.audit.Flush()
+			return
+		}
+	}
 }
 
 // ---------------------------------------------------------------- http
@@ -100,6 +122,11 @@ func (s *Server) Handler() http.Handler {
 		// it is only good manners, but a service that will tell you what it is and where
 		// it came from is worth keeping either way.
 		fmt.Fprintf(w, "openwrt-mcp %s ok\nsource: %s\n", version, sourceURL)
+		// The one thing `status`, a separate process, cannot read from a file: whether the daemon's
+		// last throttle write reached the disk. Said only when it did not.
+		if !s.mfa.ThrottlePersisted() {
+			fmt.Fprintln(w, "throttle_persisted: false")
+		}
 	})
 	return mux
 }
@@ -118,7 +145,8 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		client, ok := s.tokens.Resolve(strings.TrimSpace(raw))
 		if !ok {
-			s.audit.Record(AuditEvent{
+			// Any process on the router can send this as fast as a loop runs, so it is folded.
+			s.audit.Fold(foldNote{key: "bad-token", what: "bad or missing bearer tokens"}, AuditEvent{
 				Time: nowISO(), Client: "<unauthenticated>", Outcome: OutcomeDenied,
 				Error: "bad or missing bearer token from " + r.RemoteAddr,
 			})

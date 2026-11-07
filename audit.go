@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"strings"
@@ -162,19 +164,144 @@ type AuditEvent struct {
 	Summary  string  `json:"summary,omitempty"`
 	Error    string  `json:"error,omitempty"`
 	Duration int64   `json:"duration_ms"`
+	// Folded is on a summary line: how many refusals it stands for that have no line of their own.
+	Folded int `json:"folded,omitempty"`
+}
+
+// Some refusals cost the caller nothing and can be repeated as fast as a loop runs: a try inside a
+// delay, a bad bearer token (any local process can send one), an mfa_unlock from a client that may
+// not open its own window. A line each would wear the flash and, worse, hand the guesser a way to
+// rotate the record of what it did out of the log: at 16 MB the log moves to audit.jsonl.1 and one
+// generation is kept. So a run of them is folded: the first is written, the rest are counted, and
+// one summary line follows when the run ends. The first line and the summary carry what an
+// investigation needs, and a run's key never holds anything the caller chose, so the runs in
+// memory are bounded by the clients paired.
+
+// auditFoldPeriod is how long a run lasts when no delay ends it, so a flood costs two lines per
+// period, whatever its size.
+const auditFoldPeriod = 15 * time.Minute
+
+// foldNote says which run a refusal belongs to. end is the moment on the monotonic clock the run
+// ends, or zero for a run of auditFoldPeriod from its first refusal.
+type foldNote struct {
+	key, what string
+	end       time.Duration
+}
+
+// foldable is an error that belongs to a run.
+type foldable interface{ foldNote() foldNote }
+
+// foldOf is the run a tool's error belongs to, or nil.
+func foldOf(err error) *foldNote {
+	var f foldable
+	if errors.As(err, &f) {
+		n := f.foldNote()
+		return &n
+	}
+	return nil
+}
+
+// foldRun is a run being folded.
+type foldRun struct {
+	first AuditEvent // the line that was written
+	what  string
+	count int // refusals since it, not written
+	end   time.Duration
 }
 
 type Auditor struct {
 	mu    sync.Mutex
 	path  string
 	maxMB int
+
+	runs map[string]*foldRun
+	mono func() time.Duration
 }
 
-func NewAuditor(p string, maxMB int) *Auditor { return &Auditor{path: p, maxMB: maxMB} }
+func NewAuditor(p string, maxMB int) *Auditor {
+	epoch := time.Now()
+	return &Auditor{path: p, maxMB: maxMB, runs: map[string]*foldRun{},
+		mono: func() time.Duration { return time.Since(epoch) }}
+}
 
 // Record never returns an error and never blocks the request path on failure:
 // auditing must not be able to break the thing it is auditing.
 func (a *Auditor) Record(e AuditEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweepLocked(a.mono())
+	a.writeLocked(e)
+}
+
+// Fold records a refusal that belongs to a run: the first of a run is written, the rest are
+// counted. A note with another end is another delay, so it closes the run it finds.
+func (a *Auditor) Fold(n foldNote, e AuditEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := a.mono()
+	a.sweepLocked(now)
+	if r := a.runs[n.key]; r != nil {
+		if n.end == 0 || n.end == r.end {
+			r.count++
+			return
+		}
+		a.closeRunLocked(n.key, r)
+	}
+	end := n.end
+	if end == 0 {
+		end = now + auditFoldPeriod
+	}
+	a.runs[n.key] = &foldRun{first: e, what: n.what, end: end}
+	a.writeLocked(e)
+}
+
+// Sweep closes the runs that have ended. The daemon calls it every minute, so a summary does not
+// wait for the next line.
+func (a *Auditor) Sweep() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sweepLocked(a.mono())
+}
+
+// Flush closes every run, ended or not: the daemon is stopping, and what is counted only in its
+// memory would go with it.
+func (a *Auditor) Flush() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, key := range a.runKeysLocked() {
+		a.closeRunLocked(key, a.runs[key])
+	}
+}
+
+func (a *Auditor) sweepLocked(now time.Duration) {
+	for _, key := range a.runKeysLocked() {
+		if r := a.runs[key]; now >= r.end {
+			a.closeRunLocked(key, r)
+		}
+	}
+}
+
+func (a *Auditor) runKeysLocked() []string {
+	keys := make([]string, 0, len(a.runs))
+	for key := range a.runs {
+		keys = append(keys, key)
+	}
+	sortStrings(keys)
+	return keys
+}
+
+// closeRunLocked ends a run with its summary line, or with none when nothing was folded into it.
+func (a *Auditor) closeRunLocked(key string, r *foldRun) {
+	delete(a.runs, key)
+	if r.count == 0 {
+		return
+	}
+	a.writeLocked(AuditEvent{Time: nowISO(), Client: r.first.Client, Tool: r.first.Tool, Scope: r.first.Scope,
+		Outcome: r.first.Outcome, Summary: fmt.Sprintf("%d more %s since %s", r.count, r.what, r.first.Time),
+		Folded: r.count})
+}
+
+func (a *Auditor) writeLocked(e AuditEvent) {
 	if e.Args != nil {
 		e.Args = redact(e.Args)
 	}
@@ -186,8 +313,6 @@ func (a *Auditor) Record(e AuditEvent) {
 	if err != nil {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	if err := os.MkdirAll(path.Dir(a.path), 0o700); err != nil {
 		return
 	}

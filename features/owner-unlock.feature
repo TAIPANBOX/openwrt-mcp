@@ -94,13 +94,13 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
     And one failure fewer than the limit locks nothing, and a success resets the count
     And another client is not affected
 
-  # bound to: TestALockoutChecksNoFactor, TestAfterALockoutTheCountStartsAgain
+  # bound to: TestALockoutChecksNoFactor, TestAfterADelayOneTryIsAllowed
   Scenario: during a lockout nothing is checked and nothing is counted
     Given a client that is locked out
     When it keeps trying
     Then no factor is examined, so no TOTP code is consumed
     And the lockout is neither extended nor shortened
-    And when it ends the count starts again from zero
+    And when it ends one try is allowed, and the count goes on from where it was
 
   # bound to: TestUnlockAndLockEndToEnd, TestMFALockIsUngatedAndHonestWhenNothingWasOpen
   # bound to: TestMFALockOnlyClosesTheCallersOwnWindow, TestLockClosesTheWindowAndSaysWhetherItWasOpen
@@ -163,7 +163,8 @@ Feature: the owner unlocks the powerful tools with a PIN and/or a TOTP code
   Scenario: status shows each client's unlock state
     When the owner runs "openwrt-mcp status --json"
     Then every paired client has an mfa object with factor, totp_enrolled, totp_pending, pin_set, unlocked_until, locked_out_until and failures
-    And the runtime fields are marked as not live when status runs as a separate process, because that state lives only in the daemon's memory
+    And an open window and a running wait are marked as not live when status runs as a separate process, because they live only in the daemon's memory
+    And the failure count is read from the disk by any process
 
   # bound to: TestStatusNeverContainsASecretAHashOrASalt
   Scenario: status never carries a secret

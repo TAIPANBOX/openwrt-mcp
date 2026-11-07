@@ -25,10 +25,12 @@ import (
 // both (see mfa_factor), and the unlock window and lockout are shared with TOTP.
 //
 // A PIN is short by design, so it is only as strong as the throttle in front of it. The hash
-// is deliberately slow (PBKDF2-HMAC-SHA256, pinIterations) and per-client lockout caps the
-// number of guesses (see mfa_max_failures); neither is sufficient alone, and the lockout is
-// the one that matters, since an attacker with the file can brute-force 10^4 offline whatever
-// the hash costs. So the file is 0600 and root-only, exactly like the TOTP secrets.
+// is deliberately slow (PBKDF2-HMAC-SHA256, pinIterations) and per-client delays ration the
+// guesses (see mfa_max_failures and throttle.go); neither is sufficient alone, and the delays are
+// the ones that matter, since an attacker with the file can brute-force 10^4 offline whatever
+// the hash costs. So the file is 0600 and root-only, exactly like the TOTP secrets. The free tries
+// come first, so a PIN from the top of the list falls inside them whatever the delays are, and
+// `pin set` refuses those.
 //
 // The plaintext PIN is never stored, logged or accepted as an argument: `pin set` reads it
 // from stdin so it never appears in /proc/<pid>/cmdline or in shell history.
@@ -188,6 +190,26 @@ func validatePIN(pin string) error {
 	return fmt.Errorf("a PIN must be %d to %d digits (0-9) and nothing else", pinMinDigits, pinMaxDigits)
 }
 
+// commonPINs are the PINs a guesser tries first: the twenty most frequent four-digit PINs in the
+// published analyses of leaked PIN sets, which alone cover about a quarter of what people choose,
+// and the same shapes at the longer lengths. Short on purpose: it stops the first guesses, and it
+// is not a strength meter.
+var commonPINs = map[string]bool{
+	"1234": true, "1111": true, "0000": true, "1212": true, "7777": true,
+	"1004": true, "2000": true, "4444": true, "2222": true, "6969": true,
+	"9999": true, "3333": true, "5555": true, "6666": true, "1122": true,
+	"1313": true, "8888": true, "4321": true, "2001": true, "1010": true,
+
+	"12345": true, "54321": true, "00000": true, "11111": true,
+	"123456": true, "654321": true, "000000": true, "111111": true, "121212": true,
+	"123123": true, "112233": true, "222222": true, "333333": true, "444444": true,
+	"555555": true, "666666": true, "777777": true, "888888": true, "999999": true,
+	"1234567": true, "7654321": true, "0000000": true, "1111111": true,
+	"12345678": true, "87654321": true, "00000000": true, "11111111": true,
+}
+
+var errCommonPIN = fmt.Errorf("that PIN is one of the most common ones, the first a guesser tries; choose another")
+
 // validClientName keeps the one-line-per-client file unambiguous.
 func validClientName(c string) error {
 	if c == "" || strings.ContainsAny(c, " \t\r\n") {
@@ -323,6 +345,14 @@ func readPINLine(r io.Reader) (string, error) {
 	return "", fmt.Errorf("the line on stdin is too long to be a PIN")
 }
 
+// forgetRotated clears what a client's old PIN cost it. A running daemon does the same when it
+// sees the new record; a stopped one would start with no record of the change.
+func forgetRotated(statePath, client string) {
+	if ms, err := LoadMFA(filepath.Join(statePath, "mfa")); err == nil {
+		ms.Forget(client)
+	}
+}
+
 const pinUsage = "usage: openwrt-mcp pin set <client>    (reads one line, the PIN, from stdin)\n" +
 	"       openwrt-mcp pin clear <client>"
 
@@ -346,9 +376,16 @@ func runPIN(out io.Writer, in io.Reader, statePath string, args []string) error 
 		if err != nil {
 			return err
 		}
+		if err := validatePIN(pin); err != nil {
+			return err
+		}
+		if commonPINs[pin] {
+			return errCommonPIN
+		}
 		if err := store.Set(client, pin); err != nil {
 			return err
 		}
+		forgetRotated(statePath, client)
 		fmt.Fprintf(out, "PIN set for %q. It takes effect on a running daemon without a restart.\n"+
 			"Require it with:  option mfa_factor 'pin'  (or 'pin+totp')  in the client's policy.\n", client)
 	case "clear":
@@ -357,6 +394,7 @@ func runPIN(out io.Writer, in io.Reader, statePath string, args []string) error 
 			return err
 		}
 		if was {
+			forgetRotated(statePath, client)
 			fmt.Fprintf(out, "PIN cleared for %q.\n", client)
 		} else {
 			fmt.Fprintf(out, "%q has no PIN set; nothing to clear.\n", client)
