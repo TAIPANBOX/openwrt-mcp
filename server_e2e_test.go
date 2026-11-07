@@ -92,14 +92,18 @@ func TestHandlerRefusesWithoutAValidTokenAndAuditsIt(t *testing.T) {
 			t.Errorf("%s: status %d, challenge %q", name, resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
 		}
 	}
+	// One line for the first, and the other two counted: any process can send these in a loop.
 	evs := auditEvents(t, dir)
-	if len(evs) != 3 {
-		t.Fatalf("want 3 audit events, got %d", len(evs))
+	if len(evs) != 1 {
+		t.Fatalf("want 1 audit event, got %d", len(evs))
 	}
-	for _, e := range evs {
-		if e.Client != "<unauthenticated>" || e.Outcome != OutcomeDenied || !strings.Contains(e.Error, "bearer token") {
-			t.Errorf("event %+v", e)
-		}
+	if e := evs[0]; e.Client != "<unauthenticated>" || e.Outcome != OutcomeDenied || !strings.Contains(e.Error, "bearer token") {
+		t.Errorf("event %+v", e)
+	}
+	s.audit.Flush()
+	evs = auditEvents(t, dir)
+	if len(evs) != 2 || evs[1].Folded != 2 || evs[1].Client != "<unauthenticated>" || evs[1].Outcome != OutcomeDenied {
+		t.Errorf("after the flush: %+v", evs)
 	}
 }
 

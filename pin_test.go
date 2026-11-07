@@ -504,7 +504,9 @@ func TestRunPINRefusesAPINOnTheCommandLine(t *testing.T) {
 func TestRunPINClearAndUsage(t *testing.T) {
 	state := t.TempDir()
 	var out bytes.Buffer
-	runPIN(&out, strings.NewReader("1234\n"), state, []string{"set", "a"})
+	if err := runPIN(&out, strings.NewReader("4821\n"), state, []string{"set", "a"}); err != nil {
+		t.Fatal(err)
+	}
 
 	out.Reset()
 	if err := runPIN(&out, strings.NewReader(""), state, []string{"clear", "a"}); err != nil {

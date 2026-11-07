@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.5.0-taipanbox.8 (binary version 0.5.0.8)
+
+**Guessing the second factor costs time that grows, and a restart forgives none of it.**
+`@decided 2026-11-07`: five free tries, then waits of 15, 30 and 60 minutes, capped at one try an
+hour, with `mfa_max_failures` and `mfa_lockout` keeping their meaning as the first threshold and the
+first delay. There is no overall cap, because a lockout does not outlive the attack; that is a
+deliberate departure from the limit in NIST SP 800-63B-4 section 3.2.2, and
+[security.md](docs/security.md#guessing-costs-time-and-the-time-grows) records the reasons.
+
+### Changed
+
+- The end of a wait gives one try, not the free ones back. Before this, every wait came with five
+  new tries, 480 a day; now it is 30 in the first day and 24 a day after it.
+- The count is on the disk, in `/etc/openwrt-mcp/throttle`, with the last accepted TOTP step, and
+  no time: the moment of the next try lives in memory on the monotonic clock, and a client at or above
+  the limit starts a fresh delay after a restart or a reboot. A restart no longer forgives a
+  lockout, and a spent code stays spent across one.
+- A success resets the count, and so do 24 hours of uptime with no counted failure.
+- A run of refusals that cost the caller nothing is folded in `audit.jsonl`: the first is written,
+  the rest are counted, and one summary line with a `folded` count follows. That covers tries refused
+  inside a delay, bad bearer tokens and an `mfa_unlock` turned away before any try, so a flood of
+  those cannot rotate the evidence out of the log.
+- `pin set` refuses the most common PINs. A PIN already on file keeps working.
+- `status` reads `failures` from the disk and adds `throttle_persisted`; `/health` says
+  `throttle_persisted: false` while the count is not reaching the disk.
+
+### Added
+
+- `openwrt-mcp mfa reset <client>`, for root on the router. No MCP client can reset a count.
+- The capability `second_factor_throttle_persisted`.
+- `action_list` carries a `throttle` list, so the owner's chat can say that someone else is trying.
+  The notice itself belongs to hermes-openwrt.
+
+### Fixed
+
+- **`apk upgrade` now restarts the daemon.** apk runs `post-upgrade`, not `post-install`, when it
+  replaces a version, and the package had no `post-upgrade`: the new binary landed on the disk and the
+  old daemon ran on until the next reboot, whatever the docs said. It restarts an enabled service
+  and leaves the start at boot as the owner set it. The `.ipk` was never affected.
+- A code spent by `mfa activate` stays spent for a daemon started afterwards.
+
 ## v0.5.0-taipanbox.7 (binary version 0.5.0.7)
 
 **Built with Go 1.27.3.** No change in behaviour. Go 1.27.2's `crypto/x509` carries

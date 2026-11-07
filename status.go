@@ -30,10 +30,13 @@ type statusReport struct {
 	Listen       string          `json:"listen"`
 	Running      bool            `json:"running"`
 	Capabilities map[string]bool `json:"capabilities"`
-	Clients      []clientReport  `json:"clients"`
-	Policies     []policyReport  `json:"policies"`
-	Audit        []auditRow      `json:"audit"`
-	Counts       map[string]int  `json:"counts"`
+	// ThrottlePersisted is false while the daemon says its guess throttle is not reaching the disk
+	// (a full overlay): the counts then stand in its memory, and `failures` below can be behind.
+	ThrottlePersisted bool           `json:"throttle_persisted"`
+	Clients           []clientReport `json:"clients"`
+	Policies          []policyReport `json:"policies"`
+	Audit             []auditRow     `json:"audit"`
+	Counts            map[string]int `json:"counts"`
 }
 
 // capabilities are guarantees this binary makes, by name, so a caller can ask for the
@@ -61,6 +64,10 @@ func capabilities() map[string]bool {
 		// person may do is refused; and only the approver opens that client's window
 		// (approval.go, classify.go).
 		"actions_held_for_approval": true,
+		// The guess throttle of the second factor outlives a restart and a reboot: the failure count
+		// and the last accepted step are on the disk, no time is, and a client at or above the limit
+		// starts a fresh delay (throttle.go).
+		"second_factor_throttle_persisted": true,
 	}
 }
 
@@ -87,12 +94,12 @@ type approvalReport struct {
 // mfaReport is the owner-unlock picture of one client. It holds facts and times only: never a
 // TOTP secret, a PIN, or any part of a PIN's hash or salt, so it is safe to hand to a browser.
 //
-// The first four fields come from files and are true for any process. The rest (an open
-// window, a lockout, the failure count) exist only in the daemon's memory, by design: a
-// restart re-locks everything and forgives nothing it cannot see. `status` runs as its own
-// process and has no channel into the daemon -- the repo has none, and adding one for this
-// would be a second control surface -- so it reports them as absent and says so with
-// live_state:false. Only a caller that holds the daemon's own MFAStore gets live_state:true.
+// The first four fields and the failure count come from files and are true for any process. An
+// open window and a running delay exist only in the daemon's memory, by design: a restart
+// re-locks everything, and the moment of the next try is never written down. `status` runs as its
+// own process and has no channel into the daemon -- adding one for this would be a second control
+// surface -- so it reports them as absent and says so with live_state:false. Only a caller that
+// holds the daemon's own MFAStore gets live_state:true.
 type mfaReport struct {
 	Factor         string `json:"factor"` // totp | pin | pin+totp, or "none" when no tool is gated
 	TOTPEnrolled   bool   `json:"totp_enrolled"`
@@ -109,9 +116,11 @@ type mfaReport struct {
 // live says whether ms is the daemon's own store, so the runtime fields can be trusted.
 func buildMFAReport(ms *MFAStore, cfg *Config, client string, now time.Time, live bool) mfaReport {
 	r := mfaReport{Factor: "none", LiveState: live}
+	up := (&Policy{}).unlockPolicy()
 	for _, p := range cfg.Policies {
 		if p.Client == client && p.Enabled && len(p.MFATools) > 0 {
-			r.Factor = p.unlockPolicy().Factor
+			up = p.unlockPolicy()
+			r.Factor = up.Factor
 			break
 		}
 	}
@@ -121,8 +130,9 @@ func buildMFAReport(ms *MFAStore, cfg *Config, client string, now time.Time, liv
 	r.TOTPEnrolled = ms.Enrolled(client)
 	r.TOTPPending = ms.TOTPPending(client)
 	r.PINSet = ms.PINSet(client)
+	r.Failures = ms.RecordedFailures(client, up)
 	if live {
-		st := ms.State(client, now)
+		st := ms.StateUnder(client, up, now)
 		if !st.UnlockedUntil.IsZero() {
 			r.UnlockedUntil = st.UnlockedUntil.Format(time.RFC3339)
 		}
@@ -160,13 +170,15 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 		return err
 	}
 
+	running, persisted := probeDaemon(cfg.Listen)
 	rep := statusReport{
-		Version:      version,
-		Source:       sourceURL,
-		Listen:       cfg.Listen,
-		Running:      daemonRunning(cfg.Listen),
-		Capabilities: capabilities(),
-		Counts:       map[string]int{},
+		Version:           version,
+		Source:            sourceURL,
+		Listen:            cfg.Listen,
+		Running:           running,
+		Capabilities:      capabilities(),
+		ThrottlePersisted: persisted,
+		Counts:            map[string]int{},
 	}
 
 	perClient := map[string]int{}
@@ -222,20 +234,29 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 // answer it happily -- and reporting that as "running" would be a lie in exactly the case a
 // status pane exists to catch. So ask /health and require it to identify itself.
 func daemonRunning(listen string) bool {
+	running, _ := probeDaemon(listen)
+	return running
+}
+
+// probeDaemon is daemonRunning, and what the same answer says of the throttle: the daemon names a
+// write that failed, so only that word turns persisted to false. A daemon that is not running has
+// no write to report.
+func probeDaemon(listen string) (running, persisted bool) {
 	if listen == "" {
 		listen = defaultListen
 	}
 	c, err := net.DialTimeout("tcp", listen, 2*time.Second)
 	if err != nil {
-		return false
+		return false, true
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := fmt.Fprintf(c, "GET /health HTTP/1.0\r\nHost: %s\r\n\r\n", listen); err != nil {
-		return false
+		return false, true
 	}
 	body, _ := io.ReadAll(io.LimitReader(c, 4096))
-	return strings.Contains(string(body), "openwrt-mcp")
+	running = strings.Contains(string(body), "openwrt-mcp")
+	return running, !(running && strings.Contains(string(body), "throttle_persisted: false"))
 }
 
 // tailAudit returns the last n entries of the JSONL audit log, oldest first.
@@ -302,11 +323,17 @@ func writeStatusText(w io.Writer, r statusReport) error {
 	}
 	fmt.Fprintf(w, "openwrt-mcp %s -- %s on %s\n", r.Version, state, r.Listen)
 	fmt.Fprintf(w, "%d paired client(s), %d policy/policies\n", len(r.Clients), len(r.Policies))
+	if !r.ThrottlePersisted {
+		fmt.Fprintln(w, "  the second-factor throttle is not reaching the disk: the daemon is counting in memory")
+	}
 	for _, c := range r.Clients {
 		fmt.Fprintf(w, "  %s (%d policy/policies)\n", c.Name, c.Policies)
 		if c.MFA.Factor != "none" {
 			fmt.Fprintf(w, "    unlock factor %s: totp %s, pin %s\n", c.MFA.Factor,
 				setOrNot(c.MFA.TOTPEnrolled, c.MFA.TOTPPending), setOrNot(c.MFA.PINSet, false))
+		}
+		if c.MFA.Failures > 0 {
+			fmt.Fprintf(w, "    failed tries on record: %d\n", c.MFA.Failures)
 		}
 	}
 	for _, p := range r.Policies {

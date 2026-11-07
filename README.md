@@ -125,7 +125,14 @@ A grant decides which tools and scopes a client may use. Two more steps decide h
 printf '%s\n' "$PIN" | openwrt-mcp pin set claude-code    # 4 to 8 digits, from stdin
 openwrt-mcp mfa enrol claude-code --pending --qr           # scan the QR with an authenticator app
 openwrt-mcp mfa activate claude-code 123456                # in force once a code proves the scan
+openwrt-mcp mfa reset claude-code                          # clears the failed tries, root only
 ```
+
+Five wrong tries in a row start a wait of 15 minutes, then 30, then an hour, and a restart or a
+reboot forgives none of it: the disk holds the count and never a time. There is no overall cap, so
+a lockout does not outlive the attack. `pin set` refuses the most common PINs.
+[security.md](docs/security.md#guessing-costs-time-and-the-time-grows) has the scheme, the reasons
+and the standard it departs from.
 
 ```
 config policy
@@ -206,8 +213,9 @@ key never appears on a command line ([tools.md](docs/tools.md#wg_new_client)).
 
 ## Measured
 
-On 2026-11-01 the suite ran 325 tests, 98 scenarios bound to 181 of them, and 77 mutants of the
-approval code, each caught. CI installs the `.apk` with OpenWrt's own apk in OpenWrt's 25.12.4
+On 2026-11-07 the suite ran 412 tests, 132 scenarios bound to them and to the package's checks, and
+169 mutants of the approval code, the guess throttle and the folding of the audit log, each caught.
+CI installs the `.apk` with OpenWrt's own apk in OpenWrt's 25.12.4
 rootfs, `x86-64` and `aarch64_generic`, on every change. On a Flint 2 with OpenWrt 25.12.5 on
 2026-10-22, a port forward from the agent waited as `HELD`, ran once after the owner's PIN and code,
 and a second approval of the same card was refused. On a Brume 2, an unconfirmed change rolled back
@@ -244,7 +252,7 @@ Packages that run on the OpenWrt router itself, each from a signed apk feed for 
 openwrt-mcp was created by **Ian Williams** as
 [GlassOnTin/openwrt-mcp](https://github.com/GlassOnTin/openwrt-mcp), and its security model is
 adapted from [Haven](https://github.com/GlassOnTin/Haven), by the same author. This fork builds on
-upstream 0.5.0: the owner's PIN and factor choice with a lockout, two-step QR enrolment, the
+upstream 0.5.0: the owner's PIN and factor choice with growing delays, two-step QR enrolment, the
 rollback snapshot kept on flash, secret redaction in `uci_get` and the audit log, `uci_apply`'s
 refusal to run code, argument forms for `exec`, object and method pairs for `ubus_call`,
 `apk_add`, held changes, and the `.apk` packaging, which was offered upstream in

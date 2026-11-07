@@ -3,6 +3,7 @@
 Every figure here comes from a run: on a router, in OpenWrt's own published images in CI, or in the
 test suite. Newest first, each with its date, the machine and what it showed.
 
+- [The guess throttle](#the-guess-throttle)
 - [The suite and its gates](#the-suite-and-its-gates)
 - [In CI, on every change](#in-ci-on-every-change)
 - [On routers with vanilla OpenWrt 25.12](#on-routers-with-vanilla-openwrt-2512)
@@ -10,6 +11,25 @@ test suite. Newest first, each with its date, the machine and what it showed.
 - [Mutation checks](#mutation-checks)
 - [On GL.iNet firmware](#on-glinet-firmware)
 - [The vendor `gl-*` objects on a Flint 4](#the-vendor-objects-on-a-flint-4)
+
+## The guess throttle
+
+Run on 2026-11-07 on 0.5.0.8, on a Linux workstation with Go 1.27.3, every gate in
+[CLAUDE.md](../CLAUDE.md#gates) but the two that need docker, which run in CI:
+
+| Gate | Result |
+|---|---|
+| `go vet ./...` and `go test ./... -count=1` | 412 tests, all pass; also with `-race` |
+| Coverage, `go test -cover` | 92.1% of statements, from 91.7%; `throttle.go` 99.4% |
+| `scripts/gate-scenarios-bound.sh` | 122 scenarios in ten feature files, bound to tests that exist and pass; 24 of them in `second-factor-throttle.feature`, bound to 93 tests; the 10 scenarios of `apk-packaging.feature` bound to the checks of `gate-apk-parity.sh` |
+| `scripts/gate-throttle.sh` and its teeth | nine rules read from the source; 12 planted faults, each red at its own check, the clean copy green, and a missing subject reading as measured nothing |
+| `scripts/mutate-held.py` | 169 mutants, each caught by the test named for it: 77 of the classifier and the approval flow, 92 of the throttle and the folding of the audit log |
+
+The real binary on loopback, with a throwaway state directory: five wrong PINs answered `invalid
+credentials`, the right PIN then `locked out until` a moment 15 minutes on; 300 more tries and 1000
+bad tokens left 7 lines in `audit.jsonl`; SIGTERM wrote the two summaries, `folded` 999 and 300; after
+a start, the right PIN was refused with a fresh 15 minutes and `status` showed `failures` 5; `mfa
+reset` cleared it, and the same daemon opened the window on the next try.
 
 ## The suite and its gates
 

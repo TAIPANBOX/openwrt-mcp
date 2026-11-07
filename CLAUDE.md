@@ -53,8 +53,40 @@ before the 2026-10-17 security wave, so the numbering starts here.
    each caught by the test named beside it; real uci: `scripts/test-real-uci.sh`
    `TestRealUCIClassification`, in OpenWrt's rootfs in CI's apk job)
 
+6. **The disk holds a failure count and a TOTP step, and never a time.** The moment of the next try
+   lives in memory on the monotonic clock, throttle.go reads no other clock, and a process that
+   starts counts its own start as the last failure, so a client at or above the limit begins a fresh
+   delay and neither a restart nor a reboot gets round one. The count is written before any factor
+   is looked at and cleared on a success, atomically, with the file and the directory synced; a
+   refusal inside a delay checks and writes nothing; a corrupt record reads as the limit, a missing
+   file as zero; a failed write keeps working from memory and never refuses.
+   `@decided 2026-11-07`: the scheme and the choice of no overall cap, in docs/security.md.
+   (gate: `scripts/gate-throttle.sh`, teeth: `scripts/gate-throttle-teeth.sh`; test:
+   `features/second-factor-throttle.feature`, every scenario bound; mutants: `scripts/mutate-held.py`)
+
+7. **No MCP client can clear a count.** Only `openwrt-mcp mfa reset`, a new PIN and a new enrolment
+   do, all on the router. `ResetThrottle` is called from mfa_cli.go alone, and nothing a request
+   reaches touches a path that clears a count.
+   (gate: `scripts/gate-throttle.sh` `check_reset_is_cli_only`; test: `TestNoMCPToolResetsTheThrottle`)
+
+8. **A refusal that costs the caller nothing cannot rotate evidence out of the audit log.** A try
+   refused inside a delay, a bad token and an `mfa_unlock` turned away are folded: the first is
+   written, the rest are counted, one summary follows. A run's key holds nothing the caller chose.
+   (gate: `scripts/gate-throttle.sh` `check_bad_token_is_folded`, `check_refusals_are_folded`; test:
+   `TestAFloodCannotRotateTheEvidenceOut`, `TestRefusalsInADelayAreOneLineAndASummary`)
+
+9. **The words of the delay's refusal are a contract.** hermes-openwrt's plugin reads "locked out"
+   and the time after "until".
+   (gate: `scripts/gate-throttle.sh` `check_refusal_words`; test: `TestRefusalWordsAreThePluginsContract`)
+
+10. **An upgrade puts the running daemon on the new binary, and leaves the start at boot alone.** apk
+    runs post-upgrade, not post-install, when it replaces a version.
+    (gate: `scripts/gate-apk-parity.sh` `check_upgrade_restarts`, `check_upgrade_keeps_boot_start`;
+    teeth: CI's apk job)
+
 Each invariant is restated as scenarios in `features/`: `exec-argument-grants.feature`,
-`ubus-call-grants.feature`, `audit-keeps-secrets-out.feature` and `wireguard-key-off-argv.feature`.
+`ubus-call-grants.feature`, `audit-keeps-secrets-out.feature`, `wireguard-key-off-argv.feature` and
+`second-factor-throttle.feature`.
 Every scenario is bound to a named test, and `scripts/gate-scenarios-bound.sh` checks the binding
 both ways and runs the tests.
 
@@ -71,6 +103,7 @@ GOTOOLCHAIN=local go vet ./... && GOTOOLCHAIN=local go test ./... -count=1
 ./scripts/gate-scenarios-bound.sh
 ./scripts/gate-scenarios-bound-teeth.sh
 ./scripts/gate-wg-key-off-argv.sh && ./scripts/gate-wg-key-off-argv-teeth.sh
+./scripts/gate-throttle.sh && ./scripts/gate-throttle-teeth.sh
 python3 scripts/mutate-held.py
 ./scripts/test-real-uci.sh   # needs docker
 ```

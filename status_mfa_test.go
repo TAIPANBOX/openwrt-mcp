@@ -155,6 +155,7 @@ func TestStatusTextSaysWhichFactorsAreMissing(t *testing.T) {
 // Whoever holds the daemon's own store can see the runtime state, and then it must be right.
 func TestMFAReportFromTheDaemonShowsLiveState(t *testing.T) {
 	m, _ := enrolled(t, "4821", "a")
+	clk := useClock(m)
 	cfg := parse(t, "config policy\n\toption client 'a'\n\tlist tools 'exec'\n\tlist scopes '*'\n"+
 		"\tlist mfa_tools 'exec'\n\toption mfa_factor 'pin'\n\toption mfa_max_failures '2'\n")
 	up := cfg.Policies[0].unlockPolicy()
@@ -179,6 +180,7 @@ func TestMFAReportFromTheDaemonShowsLiveState(t *testing.T) {
 
 	// After the lockout the owner gets in, and the report shows the window.
 	later := t0.Add(16 * time.Minute)
+	clk.set(16 * time.Minute)
 	if _, err := m.Attempt("a", unlockAttempt{PIN: "4821"}, up, later); err != nil {
 		t.Fatal(err)
 	}
