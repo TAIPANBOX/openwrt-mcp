@@ -265,6 +265,10 @@ if ! grep -qx restart /tmp/rc-actions; then
 	echo "and the init script was told: $(cat /tmp/rc-actions)"
 	exit 1
 fi
+if [ ! -e /etc/rc.d/S95openwrt-mcp ]; then
+	echo "FAIL [7/10] check_upgrade_restarts: the replacement lost the start at boot"
+	exit 1
+fi
 echo "PASS [7/10] check_upgrade_restarts"
 
 # The owner switched the start at boot off: an upgrade leaves it off, and starts nothing.
