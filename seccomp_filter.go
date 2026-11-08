@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/user"
 	"slices"
 	"strconv"
 	"strings"
@@ -115,6 +116,76 @@ func confineVerdict(n int, serr error, status []byte, rerr error, euid int) (str
 		return "no seccomp filter on this platform", nil
 	}
 	return fmt.Sprintf("seccomp filter on: %d system calls denied, clone3 refused, namespace clones and x32 numbers killed", n), nil
+}
+
+// confineServe is confine for the listener: its own filter, with execve, and it does not listen
+// unless it holds no capability and is not root. Run as the account the init script gives it, it also
+// requires the bounding set procd gave it, empty, and no_new_privs.
+func confineServe() {
+	n, serr := confineSeccompServe()
+	status, rerr := os.ReadFile("/proc/self/status")
+	account := -1
+	if u, err := user.Lookup(serveUser); err == nil {
+		if id, err := strconv.Atoi(u.Uid); err == nil {
+			account = id
+		}
+	}
+	note, err := serveVerdict(n, serr, status, rerr, os.Getuid(), os.Geteuid(), account)
+	if err != nil {
+		log.Fatalf("openwrt-mcp: serve: %v", err)
+	}
+	log.Printf("openwrt-mcp: serve: %s", note)
+}
+
+// serveVerdict decides whether the listener may listen. Root may not, whatever else: the listener is
+// the part that parses what the network sends, and the init script starts it as its own account. Any
+// other account must hold no effective, permitted or ambient capability; the account the init script
+// gives it must also show an empty bounding set and no_new_privs, which is what procd applies to it.
+func serveVerdict(n int, serr error, status []byte, rerr error, uid, euid, account int) (string, error) {
+	if uid == 0 || euid == 0 {
+		return "", errors.New("the listener does not run as root: the init script starts it as " + serveUser +
+			", and root runs `openwrt-mcp helper`")
+	}
+	noFilter := errors.Is(serr, errNoSeccomp)
+	if serr != nil && !noFilter {
+		return "", fmt.Errorf("seccomp: %w", serr)
+	}
+	if rerr != nil {
+		return "", fmt.Errorf("capabilities: /proc/self/status cannot be read: %w", rerr)
+	}
+	want := []string{"CapEff", "CapPrm", "CapAmb"}
+	if uid == account {
+		want = append(want, "CapBnd")
+		if err := checkNoNewPrivs(status); err != nil {
+			return "", err
+		}
+	}
+	for _, k := range want {
+		if err := checkCapabilityMask(status, k, 0); err != nil {
+			return "", fmt.Errorf("capabilities: %w", err)
+		}
+	}
+	if noFilter {
+		return "no seccomp filter on this platform; no capability held", nil
+	}
+	return fmt.Sprintf("seccomp filter on: %d system calls denied, execve among them; no capability held", n), nil
+}
+
+// checkCapabilityMask requires one capability line of /proc/self/status to be exactly want.
+func checkCapabilityMask(status []byte, key string, want uint64) error {
+	for _, line := range strings.Split(string(status), "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok && k == key {
+			n, err := strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+			if err != nil {
+				return fmt.Errorf("%s %q is not a capability mask: %w", key, strings.TrimSpace(v), err)
+			}
+			if n != want {
+				return fmt.Errorf("%s is %016x, not %016x", key, n, want)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("/proc/self/status does not show %s", key)
 }
 
 // checkNoNewPrivs requires NoNewPrivs 1 in the text of /proc/self/status.

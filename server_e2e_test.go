@@ -56,7 +56,7 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestHandlerHealthNeedsNoTokenAndNamesItself(t *testing.T) {
 	s, _ := newToolRig(t, "")
-	ts := httptest.NewServer(s.Handler())
+	ts := httptest.NewServer(newFrontend(s).Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
@@ -75,7 +75,7 @@ func TestHandlerHealthNeedsNoTokenAndNamesItself(t *testing.T) {
 
 func TestHandlerRefusesWithoutAValidTokenAndAuditsIt(t *testing.T) {
 	s, dir := newToolRig(t, "")
-	ts := httptest.NewServer(s.Handler())
+	ts := httptest.NewServer(newFrontend(s).Handler())
 	defer ts.Close()
 
 	for name, hdr := range map[string]string{"no header": "", "wrong token": "Bearer nope", "empty bearer": "Bearer "} {
@@ -111,7 +111,7 @@ func TestHandlerRefusesWithoutAValidTokenAndAuditsIt(t *testing.T) {
 func TestHandlerRefusesAForeignOrigin(t *testing.T) {
 	s, _ := newToolRig(t, "")
 	tok, _ := s.tokens.Mint("a")
-	ts := httptest.NewServer(s.Handler())
+	ts := httptest.NewServer(newFrontend(s).Handler())
 	defer ts.Close()
 	for origin, want := range map[string]int{
 		"https://evil.example":   http.StatusForbidden,
@@ -160,7 +160,7 @@ config policy
 `)
 	alice, _ := s.tokens.Mint("alice")
 	bob, _ := s.tokens.Mint("bob")
-	ts := httptest.NewServer(s.Handler())
+	ts := httptest.NewServer(newFrontend(s).Handler())
 	defer ts.Close()
 
 	call := func(token, tool string, args map[string]any) (string, bool) {
@@ -241,13 +241,13 @@ func TestConfigReloadsWhenTheFileChangesAndKeepsTheLastGoodOne(t *testing.T) {
 func TestServeRefusesAnythingButLoopback(t *testing.T) {
 	for _, listen := range []string{"0.0.0.0:8730", "192.168.1.1:8730", "[::]:8730", "example.com:8730"} {
 		s, _ := newToolRigListening(t, listen, "")
-		err := s.Serve()
+		err := newFrontend(s).Serve(s.cfg().Listen)
 		if err == nil || !strings.Contains(err.Error(), "not loopback") {
 			t.Errorf("%s: err = %v", listen, err)
 		}
 	}
 	s, _ := newToolRigListening(t, "no-port", "")
-	if err := s.Serve(); err == nil || !strings.Contains(err.Error(), "bad listen address") {
+	if err := newFrontend(s).Serve(s.cfg().Listen); err == nil || !strings.Contains(err.Error(), "bad listen address") {
 		t.Errorf("a listen address with no port: %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestServeAnswersOnLoopback(t *testing.T) {
 	addr := l.Addr().String()
 	l.Close()
 	s, _ := newToolRigListening(t, addr, "")
-	go s.Serve() // runs until the test binary exits
+	go newFrontend(s).Serve(s.cfg().Listen) // runs until the test binary exits
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		resp, err := http.Get("http://" + addr + "/health")
@@ -282,7 +282,7 @@ func TestServeReportsAnAddressThatIsTaken(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer l.Close()
 	s, _ := newToolRigListening(t, l.Addr().String(), "")
-	if err := s.Serve(); err == nil {
+	if err := newFrontend(s).Serve(s.cfg().Listen); err == nil {
 		t.Error("Serve on a taken port returned nil")
 	}
 }

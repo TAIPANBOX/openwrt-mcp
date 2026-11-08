@@ -180,6 +180,9 @@ func TestJailVlab(t *testing.T) {
 		}
 	})
 
+	// The split: the two parts, what each holds, and what the listener cannot do (split_vlab_test.go).
+	splitVlab(t, r)
+
 	t.Run("ubus_list_and_call", func(t *testing.T) {
 		if out := r.mustOK("agent", "ubus_list", map[string]any{"filter": "system"}); !strings.Contains(out, "system") {
 			t.Fatalf("ubus_list: %q", out)

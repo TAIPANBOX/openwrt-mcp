@@ -10,4 +10,5 @@
 /usr/bin/openwrt-mcp
 /etc/init.d/openwrt-mcp
 /etc/capabilities/openwrt-mcp.json
+/etc/capabilities/openwrt-mcp-serve.json
 /etc/openwrt-mcp

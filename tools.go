@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +88,12 @@ func runStdin(ctx context.Context, timeout time.Duration, stdin string, argv ...
 const maxResultBytes = 64 << 10
 
 func textResult(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: resultText(s)}}}
+}
+
+// resultText is what a tool's answer becomes before it leaves the helper: never empty, and never
+// longer than maxResultBytes.
+func resultText(s string) string {
 	if strings.TrimSpace(s) == "" {
 		s = "(no output)"
 	}
@@ -96,7 +104,7 @@ func textResult(s string) *mcp.CallToolResult {
 				"Narrow the request -- a more specific ubus method, a logread pattern, or a filter.]",
 			len(s), maxResultBytes)
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+	return s
 }
 
 // maxArrayElems is how many elements of a long array survive pruning.
@@ -351,36 +359,118 @@ type logreadIn struct {
 }
 
 // ---------------------------------------------------------------- registration
+//
+// The tools are a fixed list of specs (toolSpecs). Each spec has two halves, one per process of the
+// split (docs/privilege-split.md):
+//
+//   - call, in the helper: decodes the input strictly into the tool's own type, runs the gate
+//     (gate: the policy, the owner's rules, the second factor, the audit) and the tool;
+//   - add, in the listener: registers the tool with the MCP server, whose typed handler encodes the
+//     input again and forwards it, with the caller's bearer token, to the helper.
+//
+// Identity therefore comes from a bearer token the helper resolves itself, on every call, and can
+// never be spoofed by a tool argument, a self-asserted clientInfo.name or the listener.
 
-// newServerForClient builds an MCP server whose handlers are closed over one authenticated
-// client name. Identity therefore comes from the validated bearer token at connection time
-// and can never be spoofed by a tool argument or a self-asserted clientInfo.name.
-func (s *Server) newServerForClient(client string) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "openwrt-mcp", Version: version}, nil)
+// forwardFunc carries one call from an MCP handler to whatever runs the gate: the helper over its
+// socket, or the Server in the same process (newServerForClient, the tests). It returns the text of
+// the answer and whether it is an error.
+type forwardFunc func(ctx context.Context, req *mcp.CallToolRequest, tool string, input json.RawMessage) (string, bool)
 
-	addTool(s, srv, client, "ubus_list",
+type toolSpec struct {
+	name string
+	call func(ctx context.Context, s *Server, client string, input json.RawMessage) (string, bool)
+	add  func(srv *mcp.Server, fwd forwardFunc)
+}
+
+// toolOf makes a spec from a tool's input type, its shape and its function. fn does the work and
+// returns (output, summary, error); it cannot bypass the gate: authorisation happens in gate, before
+// fn is ever called.
+func toolOf[In any](name, desc string, shapeOf func(In) callShape,
+	fn func(ctx context.Context, s *Server, client string, in In) (string, string, error),
+) toolSpec {
+	return toolSpec{
+		name: name,
+		call: func(ctx context.Context, s *Server, client string, input json.RawMessage) (string, bool) {
+			var in In
+			if err := strictUnmarshal(input, &in); err != nil {
+				r := "denied: the input of " + name + " is not its shape: " + err.Error()
+				s.audit.Record(AuditEvent{Time: nowISO(), Client: client, Tool: name, Outcome: OutcomeDenied, Error: r})
+				return r, true
+			}
+			return s.gate(ctx, client, name, in, shapeOf(in), func(ctx context.Context) (string, string, error) {
+				return fn(ctx, s, client, in)
+			})
+		},
+		add: func(srv *mcp.Server, fwd forwardFunc) {
+			mcp.AddTool(srv, &mcp.Tool{Name: name, Description: desc},
+				func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+					b, err := json.Marshal(in)
+					if err != nil {
+						return errResult("the input cannot be encoded: " + err.Error()), nil, nil
+					}
+					text, isErr := fwd(ctx, req, name, b)
+					if isErr {
+						return errResult(text), nil, nil
+					}
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
+				})
+		},
+	}
+}
+
+// scoped is toolOf for a tool that needs no more of a shape than its scopes.
+func scoped[In any](scopeOf func(In) []string) func(In) callShape {
+	return func(in In) callShape { return callShape{scopes: scopeOf(in)} }
+}
+
+func noScope[In any](In) []string { return nil }
+
+// strictUnmarshal decodes one JSON object into v and refuses a field v does not have, a value of
+// another type, and anything after the object.
+func strictUnmarshal(b []byte, v any) error {
+	t := bytes.TrimLeft(b, " \t\r\n")
+	if len(t) == 0 || t[0] != '{' {
+		return fmt.Errorf("not a JSON object")
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("data after the object")
+	}
+	return nil
+}
+
+// toolSpecs is the whole list of tools, in the order they are registered. It is the set of actions
+// the helper takes from the listener: a tool not on it is refused before its input is read.
+var toolSpecs = []toolSpec{
+	toolOf("ubus_list",
 		"List ubus objects and their methods with argument signatures. This is the discovery tool: "+
 			"call it first to learn what this router can actually do, rather than assuming a fixed catalogue. "+
 			"Always permitted (introspection only, returns no configuration data).",
-		func(in ubusListIn) []string { return nil },
-		func(ctx context.Context, in ubusListIn) (string, string, error) {
+		scoped(noScope[ubusListIn]),
+		func(ctx context.Context, s *Server, client string, in ubusListIn) (string, string, error) {
 			argv := []string{"ubus", "-v", "list"}
 			if in.Filter != "" {
 				argv = append(argv, in.Filter)
 			}
 			out, err := run(ctx, defaultCmdTimeout, argv...)
 			return out, "listed ubus objects", err
-		})
+		}),
 
-	addToolShaped(s, srv, client, "ubus_call",
+	toolOf("ubus_call",
 		"Call any ubus method on the router. This is the main tool -- netifd, wireless, dnsmasq, "+
 			"iwinfo, luci-rpc and the vendor's gl-* objects are all reachable through it. "+
 			"Policy scope is the string \"<object>.<method>\", matched as a pair: a grant covers "+
 			"the object and the method it names, and a dot in the method is refused.",
 		ubusCallShape,
-		ubusCall)
+		func(ctx context.Context, s *Server, client string, in ubusCallIn) (string, string, error) {
+			return ubusCall(ctx, in)
+		}),
 
-	addToolShaped(s, srv, client, "uci_apply",
+	toolOf("uci_apply",
 		"Change router configuration safely. Stages the given UCI changes, commits them, and applies "+
 			"with a rollback timer armed: if uci_confirm is not called before the timeout, the router "+
 			"automatically reverts everything. Use this rather than 'uci' via exec -- it is the only path "+
@@ -398,19 +488,19 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"DNS or the time servers, or opens a Wi-Fi without a password into a trusted network may answer "+
 			"HELD <id>: it then waits for the owner's approval and nothing was applied. Do not retry it.",
 		uciApplyShape,
-		func(ctx context.Context, in uciApplyIn) (string, string, error) {
+		func(ctx context.Context, s *Server, client string, in uciApplyIn) (string, string, error) {
 			return s.uciApply(ctx, in)
-		})
+		}),
 
-	addToolShaped(s, srv, client, "uci_confirm",
+	toolOf("uci_confirm",
 		"Confirm a pending uci_apply and cancel its rollback timer. Call this only after verifying the "+
 			"router is still reachable and behaving. Doing nothing is the safe default: the change reverts.",
 		func(in uciConfirmIn) callShape { return callShape{confirmToken: in.Token} },
-		func(ctx context.Context, in uciConfirmIn) (string, string, error) {
+		func(ctx context.Context, s *Server, client string, in uciConfirmIn) (string, string, error) {
 			return s.uciConfirm(ctx, in.Token)
-		})
+		}),
 
-	addTool(s, srv, client, "uci_get",
+	toolOf("uci_get",
 		"Read router configuration. Returns settings as config.section.option=value lines. "+
 			"Give a config to dump it (e.g. dhcp), add a section to narrow, or an option for a single value. "+
 			"Use this to inspect state before changing it with uci_apply -- safer than being handed an exec shell. "+
@@ -419,21 +509,23 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"value to write back; to set a secret, ask the operator for it. "+
 			"Policy scope mirrors uci_apply: '<config>', '<config>.<section>' or '<config>.<section>.<option>'. "+
 			"A section- or option-level read is covered by a '<config>.*' grant; a whole-config read needs '<config>'.",
-		uciGetScope,
-		uciGet)
+		scoped(uciGetScope),
+		func(ctx context.Context, s *Server, client string, in uciGetIn) (string, string, error) {
+			return uciGet(ctx, in)
+		}),
 
-	addToolShaped(s, srv, client, "exec",
+	toolOf("exec",
 		"Run a command on the router. argv is executed directly with no shell, so pipes, redirection and "+
 			"globs do not work -- pass a single program and its arguments. Policy scope is argv[0], and "+
 			"the arguments must match an argument form the policy names for that program (a program "+
 			"granted with no forms runs with no arguments). Output is returned unredacted.",
 		execShape,
-		func(ctx context.Context, in execIn) (string, string, error) {
+		func(ctx context.Context, s *Server, client string, in execIn) (string, string, error) {
 			out, err := run(ctx, clampSec(in.Timeout, 30, 300), in.Argv...)
 			return out, strings.Join(redactArgv(in.Argv), " "), err
-		})
+		}),
 
-	addTool(s, srv, client, "wg_new_client",
+	toolOf("wg_new_client",
 		"Issue a new WireGuard client for the router's VPN server: generates a keypair, allocates a "+
 			"free tunnel address, saves a peer the vendor UI still lists, and adds it to the running "+
 			"interface without restarting it, so existing sessions are not dropped. Returns the client "+
@@ -443,12 +535,12 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"This returns a NEW PRIVATE KEY in its output. Treat it as a credential: show it to the "+
 			"operator, do not write it to a file or paste it anywhere it will persist. Policy scope is "+
 			"\"wireguard_server.<server section>\"; gating this behind mfa_tools is sensible.",
-		wgScopes,
-		func(ctx context.Context, in wgNewClientIn) (string, string, error) {
+		scoped(wgScopes),
+		func(ctx context.Context, s *Server, client string, in wgNewClientIn) (string, string, error) {
 			return s.wgNewClient(ctx, in)
-		})
+		}),
 
-	addTool(s, srv, client, "apk_add",
+	toolOf("apk_add",
 		"Install packages from the official OpenWrt feeds (OpenWrt 25.12 and later, which use apk). "+
 			"Give package names only, e.g. ['tcpdump']: no version, no path, no URL and no .apk file, "+
 			"which are refused. Packages come only from the official feeds the firmware ships "+
@@ -457,10 +549,12 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"package needs, so call it with dry_run first: that shows every package that would be "+
 			"installed or changed and installs nothing. An official package's install scripts run as "+
 			"root. Policy scope is the package name, and every name must be covered by one policy.",
-		func(in apkAddIn) []string { return in.Packages },
-		apkAdd)
+		scoped(func(in apkAddIn) []string { return in.Packages }),
+		func(ctx context.Context, s *Server, client string, in apkAddIn) (string, string, error) {
+			return apkAdd(ctx, in)
+		}),
 
-	addTool(s, srv, client, "mfa_unlock",
+	toolOf("mfa_unlock",
 		"Unlock the tools this client's policy marks as needing a second factor. Which factor is "+
 			"the operator's policy: a 6-digit TOTP code from their authenticator (send 'code'), "+
 			"their PIN (send 'pin'), or both ('pin+totp'). Send exactly what the refusal from the "+
@@ -470,8 +564,8 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			"answer makes the wait longer, up to an hour: do not guess, ask the operator. A restart "+
 			"does not clear the wait. Does nothing unless the operator has set up a factor with "+
 			"'openwrt-mcp mfa enrol' or 'openwrt-mcp pin set'.",
-		func(in mfaUnlockIn) []string { return nil },
-		func(ctx context.Context, in mfaUnlockIn) (string, string, error) {
+		scoped(noScope[mfaUnlockIn]),
+		func(ctx context.Context, s *Server, client string, in mfaUnlockIn) (string, string, error) {
 			target, err := s.unlockTarget(client, in.Client)
 			if err != nil {
 				return "", "mfa_unlock", err
@@ -488,14 +582,14 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			}
 			return fmt.Sprintf("Unlocked until %s (%s).", until.Format(time.RFC3339), up.Window),
 				summary, nil
-		})
+		}),
 
-	addTool(s, srv, client, "mfa_lock",
+	toolOf("mfa_lock",
 		"Close this client's unlock window at once. Call it when the privileged work is done, "+
 			"so that the gated tools ask for the second factor again. It only ever removes "+
 			"access, so it needs no grant.",
-		func(in mfaLockIn) []string { return nil },
-		func(ctx context.Context, in mfaLockIn) (string, string, error) {
+		scoped(noScope[mfaLockIn]),
+		func(ctx context.Context, s *Server, client string, in mfaLockIn) (string, string, error) {
 			if in.Client != "" && in.Client != client {
 				if !s.cfg().approves(client, in.Client) {
 					return "", "mfa_lock", &refusedError{"refused: only the owner's client of " + in.Client + " closes its window"}
@@ -515,48 +609,54 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 			}
 			return "Already locked: " + client + " was not unlocked, so there was nothing to close.",
 				"mfa_lock", nil
-		})
+		}),
 
-	addTool(s, srv, client, "action_status",
+	toolOf("action_status",
 		"Read how your changes that were HELD for the owner's approval stand: held, applied, failed, "+
 			"rejected, expired or withdrawn, with the outcome of one that ran. An applied uci_apply names its "+
 			"uci_confirm token: check the router, then confirm it, as after any apply. Needs no grant.",
-		func(in actionStatusIn) []string { return nil },
-		func(ctx context.Context, in actionStatusIn) (string, string, error) { return s.actionStatus(client) })
+		scoped(noScope[actionStatusIn]),
+		func(ctx context.Context, s *Server, client string, in actionStatusIn) (string, string, error) {
+			return s.actionStatus(client)
+		}),
 
-	addTool(s, srv, client, "action_withdraw",
+	toolOf("action_withdraw",
 		"Withdraw one of your changes that is still HELD, so it no longer waits for the owner. It only ever "+
 			"removes, so it needs no grant.",
-		func(in actionIDIn) []string { return nil },
-		func(ctx context.Context, in actionIDIn) (string, string, error) {
+		scoped(noScope[actionIDIn]),
+		func(ctx context.Context, s *Server, client string, in actionIDIn) (string, string, error) {
 			return s.actionWithdraw(client, in.ID)
-		})
+		}),
 
-	addTool(s, srv, client, "action_list",
+	toolOf("action_list",
 		"For the owner's client only: the held changes of the clients it approves, each with its card and "+
 			"hash, and the guess throttle of those clients (failures, limit, locked_out_until, refused, persisted).",
-		func(in actionStatusIn) []string { return nil },
-		func(ctx context.Context, in actionStatusIn) (string, string, error) { return s.actionList(client) })
+		scoped(noScope[actionStatusIn]),
+		func(ctx context.Context, s *Server, client string, in actionStatusIn) (string, string, error) {
+			return s.actionList(client)
+		}),
 
-	addTool(s, srv, client, "action_approve",
+	toolOf("action_approve",
 		"For the owner's client only: approve one held change by its id and the hash of its card, with the "+
 			"owner's PIN and a current code. The change runs once, exactly as held; an approval never opens "+
 			"the unlock window.",
-		func(in actionApproveIn) []string { return nil },
-		func(ctx context.Context, in actionApproveIn) (string, string, error) {
+		scoped(noScope[actionApproveIn]),
+		func(ctx context.Context, s *Server, client string, in actionApproveIn) (string, string, error) {
 			return s.actionApprove(ctx, client, in)
-		})
+		}),
 
-	addTool(s, srv, client, "action_reject",
+	toolOf("action_reject",
 		"For the owner's client only: reject one held change. Takes no factor.",
-		func(in actionIDIn) []string { return nil },
-		func(ctx context.Context, in actionIDIn) (string, string, error) { return s.actionReject(client, in.ID) })
+		scoped(noScope[actionIDIn]),
+		func(ctx context.Context, s *Server, client string, in actionIDIn) (string, string, error) {
+			return s.actionReject(client, in.ID)
+		}),
 
-	addTool(s, srv, client, "logread",
+	toolOf("logread",
 		"Read the router's system log. Separate from exec so a policy can grant log access without "+
 			"granting a root shell.",
-		func(in logreadIn) []string { return nil },
-		func(ctx context.Context, in logreadIn) (string, string, error) {
+		scoped(noScope[logreadIn]),
+		func(ctx context.Context, s *Server, client string, in logreadIn) (string, string, error) {
 			n := in.Lines
 			if n <= 0 {
 				n = 100
@@ -575,9 +675,46 @@ func (s *Server) newServerForClient(client string) *mcp.Server {
 				out = strings.Join(keep, "\n")
 			}
 			return out, fmt.Sprintf("%d lines", n), err
-		})
+		}),
+}
 
+// toolByName finds a spec; the helper refuses a name it does not find before reading the input.
+func toolByName(name string) (toolSpec, bool) {
+	for _, t := range toolSpecs {
+		if t.name == name {
+			return t, true
+		}
+	}
+	return toolSpec{}, false
+}
+
+// buildMCPServer registers every tool with a new MCP server whose handlers hand each call to fwd.
+func buildMCPServer(fwd forwardFunc) *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "openwrt-mcp", Version: version}, nil)
+	for _, t := range toolSpecs {
+		t.add(srv, fwd)
+	}
 	return srv
+}
+
+// newServerForClient is the MCP server of one client with the gate in the same process: the tests
+// drive the tools through it. Each call goes through the same encoding and strict decoding as a call
+// from the listener does.
+func (s *Server) newServerForClient(client string) *mcp.Server {
+	return buildMCPServer(func(ctx context.Context, _ *mcp.CallToolRequest, tool string, input json.RawMessage) (string, bool) {
+		return s.callJSON(ctx, client, tool, input)
+	})
+}
+
+// callJSON runs one call of a known client: the tool by name, the input as JSON.
+func (s *Server) callJSON(ctx context.Context, client, tool string, input json.RawMessage) (string, bool) {
+	t, ok := toolByName(tool)
+	if !ok {
+		r := "denied: there is no tool " + strconv.Quote(truncate(tool, 64))
+		s.audit.Record(AuditEvent{Time: nowISO(), Client: client, Tool: truncate(tool, 64), Outcome: OutcomeDenied, Error: r})
+		return r, true
+	}
+	return t.call(ctx, s, client, input)
 }
 
 func clampSec(v, def, max int) time.Duration {
@@ -673,124 +810,111 @@ func (e *unlockRefusal) foldNote() foldNote {
 	return foldNote{key: "unlock-refused:" + e.caller, what: "mfa_unlock calls turned away from " + e.caller}
 }
 
-// addTool registers one tool behind the shared policy+audit gate. scopeOf derives the policy
-// scope strings from the typed input; it is addToolShaped for a tool that needs no more than
-// that.
-func addTool[In any](s *Server, srv *mcp.Server, client, name, desc string,
-	scopeOf func(In) []string,
-	fn func(context.Context, In) (string, string, error),
-) {
-	addToolShaped(s, srv, client, name, desc, func(in In) callShape {
-		return callShape{scopes: scopeOf(in)}
-	}, fn)
-}
+// gate runs one call of client to the tool name: the shape's refusal, the policy, the owner's rules
+// (refused, held), the second factor, then fn; every outcome is written to the audit log. It returns
+// the text of the answer and whether it is an error. It runs in the helper, which is the only process
+// that holds the policy, the factors, the held changes and the audit log.
+func (s *Server) gate(ctx context.Context, client, name string, in any, shape callShape,
+	fn func(context.Context) (string, string, error),
+) (string, bool) {
+	started := time.Now()
+	ev := AuditEvent{Time: nowISO(), Client: client, Tool: name, Scope: strings.Join(shape.scopes, " ")}
+	if b, err := json.Marshal(in); err == nil {
+		var m any
+		if json.Unmarshal(b, &m) == nil {
+			ev.Args = m
+		}
+	}
+	var fold *foldNote
+	finish := func(text string, isErr bool, outcome Outcome, summary, errMsg string) (string, bool) {
+		ev.Outcome, ev.Summary, ev.Error = outcome, summary, errMsg
+		ev.Duration = time.Since(started).Milliseconds()
+		// The approver's client asks for the held changes every few seconds; a line on
+		// flash for each answered listing would wear the flash and drown the log. What it
+		// lists is held in memory and changes nothing, and a refused listing is still kept.
+		if !(name == "action_list" && outcome == OutcomeOK) {
+			if fold != nil {
+				s.audit.Fold(*fold, ev)
+			} else {
+				s.audit.Record(ev)
+			}
+		}
+		if isErr {
+			return text, true
+		}
+		return resultText(text), false
+	}
 
-// addToolShaped registers one tool behind the shared policy+audit gate. shapeOf says what the
-// call is; fn does the work and returns (output, summary, error). Neither can bypass the gate:
-// authorisation happens in this wrapper, before fn is ever called.
-func addToolShaped[In any](s *Server, srv *mcp.Server, client, name, desc string,
-	shapeOf func(In) callShape,
-	fn func(context.Context, In) (string, string, error),
-) {
-	mcp.AddTool(srv, &mcp.Tool{Name: name, Description: desc},
-		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-			started := time.Now()
-			shape := shapeOf(in)
-			ev := AuditEvent{Time: nowISO(), Client: client, Tool: name, Scope: strings.Join(shape.scopes, " ")}
-			if b, err := json.Marshal(in); err == nil {
-				var m any
-				if json.Unmarshal(b, &m) == nil {
-					ev.Args = m
-				}
+	// A malformed call is refused whatever the grants say, before they are read.
+	if shape.refusal != "" {
+		return finish(shape.refusal, true, OutcomeDenied, "", shape.refusal)
+	}
+	// ubus_list is introspection only and is never gated; everything else must be
+	// covered by a standing policy. Denial is the default.
+	//
+	// mfa_unlock is exempt for the obvious reason: it is how you satisfy the second
+	// factor, so gating it behind the second factor would be a deadlock. It is safe
+	// to leave open because it grants nothing on its own -- without the right
+	// factors it does nothing but record a failed attempt, and the delays ration those.
+	// mfa_lock is exempt because it can only remove access, never add it.
+	//
+	// The action_* tools are exempt too: action_status and action_withdraw only read or
+	// remove the caller's own held changes, and the other three decide who may call them
+	// from the approval sections, not from grants (approval.go).
+	if !ungated[name] {
+		now := time.Now()
+		p, reason := s.cfg().authorise(client, name, shape.scopes, shape.argv, now)
+		if p == nil {
+			return finish(reason, true, OutcomeDenied, "", reason)
+		}
+		// A client with an approval section: what only a person may do is refused, and a
+		// high-impact change is held, both before the window is asked, so a window lets
+		// neither through and a closed one does not stop a proposal (classify.go).
+		if a := s.cfg().approvalFor(client); a != nil {
+			if r := humanOnlyRefusal(name, shape.scopes); r != "" {
+				return finish(r, true, OutcomeDenied, "", r)
 			}
-			var fold *foldNote
-			finish := func(res *mcp.CallToolResult, outcome Outcome, summary, errMsg string) (*mcp.CallToolResult, any, error) {
-				ev.Outcome, ev.Summary, ev.Error = outcome, summary, errMsg
-				ev.Duration = time.Since(started).Milliseconds()
-				// The approver's client asks for the held changes every few seconds; a line on
-				// flash for each answered listing would wear the flash and drown the log. What it
-				// lists is held in memory and changes nothing, and a refused listing is still kept.
-				if !(name == "action_list" && outcome == OutcomeOK) {
-					if fold != nil {
-						s.audit.Fold(*fold, ev)
-					} else {
-						s.audit.Record(ev)
-					}
+			cl := s.classifyCall(ctx, name, shape, p, a)
+			switch cl.tier {
+			case tierRefused:
+				return finish(cl.refusal, true, OutcomeDenied, "", cl.refusal)
+			case tierHeld:
+				if why := s.approvalReady(a); why != "" {
+					r := "refused: " + strings.Join(cl.headlines, "; ") + ". A change like this waits for the " +
+						"owner's approval, and " + why + "; nothing was applied."
+					return finish(r, true, OutcomeDenied, "", r)
 				}
-				return res, nil, nil
+				h, refusal := s.hold(client, name, shape.input, shape.scopes, shape.argv, cl, cl.diff, a, now)
+				if h == nil {
+					return finish(refusal, true, OutcomeDenied, "", refusal)
+				}
+				return finish(heldText(h), false, OutcomeHeld,
+					"held "+h.ID+" ref "+h.Hash[:8]+": "+strings.Join(h.Headlines, "; "), "")
 			}
+		}
+		// Second factor, checked after authorisation so an unauthorised caller
+		// learns nothing about which tools are MFA-gated. A change the owner approved
+		// is confirmed without one: the approval was the owner's consent to it.
+		if name != "uci_confirm" || !s.approvedApply(shape.confirmToken, client) {
+			if r := s.mfaGate(p, client, name, now); r != "" {
+				return finish(r, true, OutcomeDenied, "", r)
+			}
+		}
+	}
 
-			// A malformed call is refused whatever the grants say, before they are read.
-			if shape.refusal != "" {
-				return finish(errResult(shape.refusal), OutcomeDenied, "", shape.refusal)
-			}
-			// ubus_list is introspection only and is never gated; everything else must be
-			// covered by a standing policy. Denial is the default.
-			//
-			// mfa_unlock is exempt for the obvious reason: it is how you satisfy the second
-			// factor, so gating it behind the second factor would be a deadlock. It is safe
-			// to leave open because it grants nothing on its own -- without the right
-			// factors it does nothing but record a failed attempt, and the delays ration those.
-			// mfa_lock is exempt because it can only remove access, never add it.
-			//
-			// The action_* tools are exempt too: action_status and action_withdraw only read or
-			// remove the caller's own held changes, and the other three decide who may call them
-			// from the approval sections, not from grants (approval.go).
-			if !ungated[name] {
-				now := time.Now()
-				p, reason := s.cfg().authorise(client, name, shape.scopes, shape.argv, now)
-				if p == nil {
-					return finish(errResult(reason), OutcomeDenied, "", reason)
-				}
-				// A client with an approval section: what only a person may do is refused, and a
-				// high-impact change is held, both before the window is asked, so a window lets
-				// neither through and a closed one does not stop a proposal (classify.go).
-				if a := s.cfg().approvalFor(client); a != nil {
-					if r := humanOnlyRefusal(name, shape.scopes); r != "" {
-						return finish(errResult(r), OutcomeDenied, "", r)
-					}
-					cl := s.classifyCall(ctx, name, shape, p, a)
-					switch cl.tier {
-					case tierRefused:
-						return finish(errResult(cl.refusal), OutcomeDenied, "", cl.refusal)
-					case tierHeld:
-						if why := s.approvalReady(a); why != "" {
-							r := "refused: " + strings.Join(cl.headlines, "; ") + ". A change like this waits for the " +
-								"owner's approval, and " + why + "; nothing was applied."
-							return finish(errResult(r), OutcomeDenied, "", r)
-						}
-						h, refusal := s.hold(client, name, shape.input, shape.scopes, shape.argv, cl, cl.diff, a, now)
-						if h == nil {
-							return finish(errResult(refusal), OutcomeDenied, "", refusal)
-						}
-						return finish(textResult(heldText(h)), OutcomeHeld,
-							"held "+h.ID+" ref "+h.Hash[:8]+": "+strings.Join(h.Headlines, "; "), "")
-					}
-				}
-				// Second factor, checked after authorisation so an unauthorised caller
-				// learns nothing about which tools are MFA-gated. A change the owner approved
-				// is confirmed without one: the approval was the owner's consent to it.
-				if name != "uci_confirm" || !s.approvedApply(shape.confirmToken, client) {
-					if r := s.mfaGate(p, client, name, now); r != "" {
-						return finish(errResult(r), OutcomeDenied, "", r)
-					}
-				}
-			}
-
-			out, summary, err := fn(ctx, in)
-			fold = foldOf(err)
-			if err != nil && isRefused(err) {
-				// A refusal by rule (uci_apply's code-execution check) is a DENIED, like a policy
-				// refusal, not an ERROR: nothing broke, the daemon said no.
-				return finish(errResult(err.Error()), OutcomeDenied, summary, err.Error())
-			}
-			if err != nil {
-				msg := err.Error()
-				if out != "" {
-					msg += "\n" + out
-				}
-				return finish(errResult(msg), OutcomeError, summary, err.Error())
-			}
-			return finish(textResult(out), OutcomeOK, summary, "")
-		})
+	out, summary, err := fn(ctx)
+	fold = foldOf(err)
+	if err != nil && isRefused(err) {
+		// A refusal by rule (uci_apply's code-execution check) is a DENIED, like a policy
+		// refusal, not an ERROR: nothing broke, the daemon said no.
+		return finish(err.Error(), true, OutcomeDenied, summary, err.Error())
+	}
+	if err != nil {
+		msg := err.Error()
+		if out != "" {
+			msg += "\n" + out
+		}
+		return finish(msg, true, OutcomeError, summary, err.Error())
+	}
+	return finish(out, false, OutcomeOK, summary, "")
 }

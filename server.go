@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"path"
 	"regexp"
@@ -14,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Server struct {
@@ -28,7 +24,6 @@ type Server struct {
 	mu      sync.RWMutex
 	config  *Config
 	cfgTime time.Time
-	servers map[string]*mcp.Server // per authenticated client name
 	pending map[string]*pendingApply
 	held    *heldStore // changes waiting for the owner's approval (approval.go)
 }
@@ -82,7 +77,6 @@ func NewServer(configPath, statePath string) (*Server, error) {
 		config:     cfg,
 		tokens:     tokens,
 		audit:      NewAuditor(cfg.AuditPath, cfg.AuditMaxMB),
-		servers:    map[string]*mcp.Server{},
 		pending:    map[string]*pendingApply{},
 		held:       newHeldStore(),
 	}
@@ -112,102 +106,47 @@ func (s *Server) housekeep(stop <-chan os.Signal, tick <-chan time.Time) {
 	}
 }
 
-// ---------------------------------------------------------------- http
+// ---------------------------------------------------------------- the helper's side of a call
+//
+// The listener (frontend.go) holds no token store, no policy and no state: it asks the helper, which
+// is this Server, who a bearer token is and to run each call. The helper resolves the token itself on
+// every call, so a listener that lies about a client gains nothing (docs/privilege-split.md).
 
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", s.authenticate(mcp.NewStreamableHTTPHandler(s.getServer, nil)))
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		// Points at its own source. Under the AGPL this was a §13 obligation; under MIT
-		// it is only good manners, but a service that will tell you what it is and where
-		// it came from is worth keeping either way.
-		fmt.Fprintf(w, "openwrt-mcp %s ok\nsource: %s\n", version, sourceURL)
-		// The one thing `status`, a separate process, cannot read from a file: whether the daemon's
-		// last throttle write reached the disk. Said only when it did not.
-		if !s.mfa.ThrottlePersisted() {
-			fmt.Fprintln(w, "throttle_persisted: false")
-		}
-	})
-	return mux
-}
+// maxTokenLen bounds what is taken as a bearer token: a real one is 43 characters.
+const maxTokenLen = 512
 
-// authenticate enforces the bearer token on every request. There is deliberately no
-// loopback auto-trust: any process on the router can reach 127.0.0.1, and an `ssh -R`
-// can make remote traffic arrive there too, so reachability is never treated as proof
-// of identity. Origin is recorded for audit attribution only.
-func (s *Server) authenticate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Browser defence: a page in a local browser must not be able to drive the router.
-		if o := r.Header.Get("Origin"); o != "" && !isLoopbackOrigin(o) {
-			http.Error(w, "forbidden origin", http.StatusForbidden)
-			return
-		}
-		raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		client, ok := s.tokens.Resolve(strings.TrimSpace(raw))
-		if !ok {
-			// Any process on the router can send this as fast as a loop runs, so it is folded.
-			s.audit.Fold(foldNote{key: "bad-token", what: "bad or missing bearer tokens"}, AuditEvent{
-				Time: nowISO(), Client: "<unauthenticated>", Outcome: OutcomeDenied,
-				Error: "bad or missing bearer token from " + r.RemoteAddr,
-			})
-			w.Header().Set("WWW-Authenticate", `Bearer realm="openwrt-mcp"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		_ = client
-		next.ServeHTTP(w, r)
+// badToken is the audit line of a bad or missing bearer token. Any process on the router can send
+// one as fast as a loop runs, so it is folded.
+func (s *Server) badToken(remote string) {
+	s.audit.Fold(foldNote{key: "bad-token", what: "bad or missing bearer tokens"}, AuditEvent{
+		Time: nowISO(), Client: "<unauthenticated>", Outcome: OutcomeDenied,
+		Error: "bad or missing bearer token from " + truncate(remote, 128),
 	})
 }
 
-func (s *Server) getServer(r *http.Request) *mcp.Server {
-	raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	client, ok := s.tokens.Resolve(raw)
+// auth resolves a bearer token to its client, and writes the folded audit line of a bad one.
+func (s *Server) auth(token, remote string) (string, bool, error) {
+	client, ok := s.tokens.Resolve(strings.TrimSpace(token))
 	if !ok {
-		return nil // unreachable: authenticate() already rejected it
+		s.badToken(remote)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if srv, ok := s.servers[client]; ok {
-		return srv
-	}
-	srv := s.newServerForClient(client)
-	s.servers[client] = srv
-	return srv
+	return client, ok, nil
 }
 
-func isLoopbackOrigin(o string) bool {
-	o = strings.TrimPrefix(strings.TrimPrefix(o, "https://"), "http://")
-	if h, _, err := net.SplitHostPort(o); err == nil {
-		o = h
+// call runs one tool call under the client its bearer token resolves to. The token is resolved
+// here, not taken from the listener as a name.
+func (s *Server) call(ctx context.Context, token, tool string, input json.RawMessage) (string, bool, error) {
+	client, ok := s.tokens.Resolve(strings.TrimSpace(token))
+	if !ok {
+		s.badToken("the listener")
+		return "unauthorized: bad or missing bearer token", true, nil
 	}
-	return o == "localhost" || net.ParseIP(o).IsLoopback()
+	text, isErr := s.callJSON(ctx, client, tool, input)
+	return text, isErr, nil
 }
 
-func (s *Server) Serve() error {
-	cfg := s.cfg()
-	// Refuse to bind anything but loopback. This is a deliberate hard stop rather than a
-	// default: reaching the router is SSH's job, and a mis-edited config must not silently
-	// expose a root-equivalent RPC surface to the LAN.
-	host, _, err := net.SplitHostPort(cfg.Listen)
-	if err != nil {
-		return fmt.Errorf("bad listen address %q: %w", cfg.Listen, err)
-	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("listen address %q is not loopback; openwrt-mcp refuses to bind a routable address (reach it with: ssh -L %s:%s root@router)", cfg.Listen, cfg.Listen, cfg.Listen)
-	}
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return err
-	}
-	log.Printf("openwrt-mcp %s listening on %s (%d policies, %d paired clients)",
-		version, cfg.Listen, len(cfg.Policies), len(s.tokens.Clients()))
-	srv := &http.Server{
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		MaxHeaderBytes:    64 << 10,
-	}
-	return srv.Serve(ln)
-}
+// health is what /health adds to its line: whether the last throttle write reached the disk.
+func (s *Server) health() (bool, error) { return s.mfa.ThrottlePersisted(), nil }
 
 // ---------------------------------------------------------------- uci apply/rollback
 //

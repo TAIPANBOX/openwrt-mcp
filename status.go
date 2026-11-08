@@ -68,6 +68,11 @@ func capabilities() map[string]bool {
 		// and the last accepted step are on the disk, no time is, and a client at or above the limit
 		// starts a fresh delay (throttle.go).
 		"second_factor_throttle_persisted": true,
+		// The daemon is two processes: the listener, which parses HTTP and MCP, runs as its own
+		// account with no capability and starts no program, and refuses to run as root; the helper,
+		// which holds root, does not listen on the network and serves only the listener's uid
+		// (helper.go, frontend.go, docs/privilege-split.md).
+		"listener_holds_no_root": true,
 	}
 }
 

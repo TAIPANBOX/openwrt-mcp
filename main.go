@@ -44,6 +44,7 @@ func main() {
 	log.SetFlags(0)
 	configPath := flag.String("config", defaultConfigPath, "path to the UCI config file")
 	statePath := flag.String("state", defaultStatePath, "directory for tokens, audit log and pending state")
+	socketPath := flag.String("socket", defaultHelperSocket, "the helper's Unix socket, between the two parts of the daemon")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -55,6 +56,16 @@ func main() {
 
 	switch args[0] {
 	case "serve":
+		// The listener (frontend.go): its own user, no capability, no program it may start. It
+		// reads no file of the daemon's state: even the address it listens on comes from the helper.
+		confineServe()
+		hc := &helperClient{path: *socketPath}
+		listen, err := hc.listen(30 * time.Second)
+		must(err)
+		must(newFrontend(hc).Serve(listen))
+
+	case "helper":
+		// The part that holds root (helper.go): every decision and every action, and no network.
 		confine()
 		s, err := NewServer(*configPath, *statePath)
 		must(err)
@@ -64,7 +75,7 @@ func main() {
 			s.housekeep(stop, time.NewTicker(time.Minute).C)
 			os.Exit(0)
 		}()
-		must(s.Serve())
+		must(runHelper(s, *socketPath))
 
 	case "pair":
 		if len(args) != 2 {
@@ -230,7 +241,8 @@ func parseDuration(s string) (time.Duration, error) {
 func usage() {
 	fmt.Fprintf(os.Stderr, `openwrt-mcp %s -- an MCP server hosted on the router
 
-  serve                                       run the daemon (loopback only)
+  helper                                      run the daemon's root part (procd starts it)
+  serve                                       run the daemon's listener, as openwrt-mcp (loopback only)
   pair     <client>                           mint a bearer token, printed once
   unpair   <client>                           revoke every token for a client
   clients                                     list paired clients
