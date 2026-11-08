@@ -487,7 +487,9 @@ that line the daemon ran with `CapBnd 000001ffffffffff`). The seccomp filter is 
 not procd's profile, because procd applies a profile through `LD_PRELOAD`, which a static Go binary
 never loads. It is a deny-list, not an allow-list, because the daemon starts `uci`, `ubus`, `apk` and
 whatever a grant names, and every one of them inherits it. It goes on first thing in `serve`, on
-every thread, and is built for amd64 and arm64.
+every thread, and is built for amd64 and arm64. CI runs it on a kernel of each
+(`scripts/gate-seccomp-native.sh`, on an amd64 runner and an arm64 one), where every listed call, by
+the number the kernel's own headers give its name, must end the caller with SIGSYS.
 
 **Fail closed.** Before it listens the daemon reads its own `/proc/self/status` and refuses to run
 unless `NoNewPrivs` is 1, `Seccomp` is 2, and `CapBnd` and `CapEff` are exactly the nine. A router

@@ -66,6 +66,12 @@ Feature: the daemon runs with a narrowed kernel surface
     When a call is made with bit 30 set in its number
     Then it is killed, a denied call, a clone into a user namespace and an allowed call alike
 
+  # bound to: TestEveryDeniedCallIsKilledByThisKernel
+  Scenario: the filter of each architecture is run by a kernel of that architecture
+    When the tests run natively on amd64 and on arm64, the architecture of a router
+    Then every call on the list, by the number the kernel's own headers give its name, ends the caller with SIGSYS
+    And a name in the table that points at another call's number fails the test
+
   # bound to: TestPackagesShipTheCapabilityFile
   Scenario: an installed init script finds the file it names
     When the package is installed or upgraded, by apk, by opkg or by make install

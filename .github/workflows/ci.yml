@@ -30,6 +30,10 @@ jobs:
       # the proof that the gate would notice each one lost. Running them on a router is
       # scripts/e2e-vlab.sh, which needs the vlab and is not a CI job.
       - run: ./scripts/gate-jail.sh && ./scripts/gate-jail-teeth.sh
+      # The filter on this runner's amd64 kernel, every listed call by the kernel's own number, and
+      # the proof that a wrong table or audit architecture turns it red. The arm64 job does the same
+      # on an arm64 kernel.
+      - run: ./scripts/gate-seccomp-native.sh && ./scripts/gate-seccomp-native-teeth.sh
 
       # The package is only useful if it builds for the router, so build it here
       # rather than finding out at install time on someone's only router.
@@ -57,6 +61,24 @@ jobs:
         with:
           name: openwrt-mcp-ipk
           path: openwrt-mcp_*.ipk
+
+  # A router is arm64, and the seccomp filter has a table and an audit architecture per architecture.
+  # The test job above runs amd64's on an amd64 kernel and only compiles arm64's; this job runs arm64's
+  # on an arm64 kernel, natively, so its numbers are executed and not only compiled. The arm64 runner
+  # is free for a public repository. The apk job's aarch64 leg runs the router's rootfs under QEMU user
+  # emulation and runs no seccomp test.
+  seccomp-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: ./scripts/gate-seccomp-native.sh
+      # Each fault is planted in arm64's table in a copy of the tree, and the gate must go red at the
+      # test named for it, then green on the copy as it is.
+      - run: ./scripts/gate-seccomp-native-teeth.sh
 
   # OpenWrt 25.12 dropped opkg for apk, so from that release on the .ipk above is not
   # installable at all. This job builds the .apk and then does the thing the .ipk job

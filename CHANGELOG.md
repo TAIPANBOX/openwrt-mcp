@@ -20,6 +20,9 @@ what is not.
 - `scripts/gate-jail.sh` with its teeth in `scripts/gate-jail-teeth.sh`,
   `features/service-narrowing.feature`, and `scripts/e2e-vlab.sh`, which runs every tool against the
   daemon on a virtual router.
+- `scripts/gate-seccomp-native.sh`, with its teeth: the filter on a real kernel of each architecture,
+  every listed call by the number the kernel's own headers give its name. CI runs it on amd64 and on
+  an arm64 runner, so arm64's table, the one a router uses, is executed and not only compiled.
 
 ### Changed
 
