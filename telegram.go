@@ -63,20 +63,25 @@ func (d pipeDialer) dial(ctx context.Context, _, _ string) (net.Conn, error) {
 	var nd net.Dialer
 	c, err := nd.DialContext(ctx, "unix", d.path)
 	if err != nil {
-		return nil, fmt.Errorf("the listener's pipe %s: %w", d.path, err)
+		return nil, &pipeError{fmt.Sprintf("the listener's pipe %s: %v", d.path, err)}
 	}
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
 		c.Close()
-		return nil, fmt.Errorf("the listener's pipe %s is not a Unix socket", d.path)
+		return nil, &pipeError{fmt.Sprintf("the listener's pipe %s is not a Unix socket", d.path)}
 	}
 	uid, err := d.peer(uc)
 	if err != nil || uid != d.uid {
 		c.Close()
-		return nil, fmt.Errorf("the pipe %s is not the listener's: uid %d (%v), not %d", d.path, uid, err, d.uid)
+		return nil, &pipeError{fmt.Sprintf("the pipe %s is not the listener's: uid %d (%v), not %d", d.path, uid, err, d.uid)}
 	}
 	return c, nil
 }
+
+// pipeError is a pipe the helper could not reach or would not use.
+type pipeError struct{ text string }
+
+func (e *pipeError) Error() string { return e.text }
 
 // telegramTLS is the TLS the bot runs over the pipe: api.telegram.org's certificate checked against
 // roots (nil: the system's), TLS 1.2 at least.
@@ -124,7 +129,7 @@ func (c *telegramClient) call(ctx context.Context, method string, params any, ou
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram %s: %v", method, c.scrub(unwrapURLError(err)))
+		return &transportError{method: method, text: c.scrub(unwrapURLError(err)), cause: unwrapURLError(err)}
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxTelegramAnswer+1))
@@ -136,6 +141,16 @@ func (c *telegramClient) call(ctx context.Context, method string, params any, ou
 	}
 	return decodeTelegramAnswer(method, resp.StatusCode, b, out)
 }
+
+// transportError is a call that got no answer. Its text has the token taken out; its cause, which
+// holds no URL, is kept so botFailure can name the kind of failure.
+type transportError struct {
+	method, text string
+	cause        error
+}
+
+func (e *transportError) Error() string { return "telegram " + e.method + ": " + e.text }
+func (e *transportError) Unwrap() error { return e.cause }
 
 // unwrapURLError drops the URL from a transport error: the URL holds the token.
 func unwrapURLError(err error) error {

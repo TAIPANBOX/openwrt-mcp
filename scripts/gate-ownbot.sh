@@ -17,7 +17,7 @@
 # OWNBOT_ROOT points it at another tree, which is how scripts/gate-ownbot-teeth.sh plants its faults.
 set -u
 
-CHECKS='check_ip_sockets_are_the_listeners check_bot_speaks_to_telegram_only check_approver_tools_refused_with_the_bot check_pipe_serves_the_helper_only check_init_makes_the_pipe_dir check_factor_deleted_before_read'
+CHECKS='check_ip_sockets_are_the_listeners check_bot_speaks_to_telegram_only check_approver_tools_refused_with_the_bot check_pipe_serves_the_helper_only check_init_makes_the_pipe_dir check_factor_deleted_before_read check_bot_failures_are_words'
 
 if [ "${1:-}" = "--selftest" ]; then
 	for c in $CHECKS; do echo "$c"; done
@@ -148,6 +148,20 @@ check_factor_deleted_before_read() {
 		fi
 	done
 	echo "ok   check_factor_deleted_before_read"
+}
+
+# A failure of the bot leaves the helper as a word of botFailures and never as an error's text: no log
+# line of the bot prints an error, and the seen file is written from botFailure alone.
+check_bot_failures_are_words() {
+	need "$ROOT/ownbot.go"
+	bad=$(grep -nE 'log\.Printf\("openwrt-mcp: the router.s bot[^"]*%v"[^)]*err' "$ROOT/ownbot.go" | grep -v 'keep the bound chat')
+	[ -z "$bad" ] || { fail check_bot_failures_are_words "a log line of the bot prints an error's text: $bad"; return 1; }
+	n=$(body ownbot.go 'func (b *ownerBot) noteLocked(' | grep -c 's.Failure = botFailure(err)')
+	[ "$n" = 1 ] || { fail check_bot_failures_are_words "noteLocked does not write the failure from botFailure"; return 1; }
+	if body ownbot.go 'func (b *ownerBot) noteLocked(' | grep -qE 'err\.Error\(\)'; then
+		fail check_bot_failures_are_words "noteLocked writes an error's text"; return 1
+	fi
+	echo "ok   check_bot_failures_are_words"
 }
 
 if [ $# -gt 0 ]; then

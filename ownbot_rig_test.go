@@ -503,6 +503,7 @@ type botRig struct {
 	mono   *testMono
 	bot    *ownerBot
 	cancel context.CancelFunc
+	bots   []*ownerBot
 }
 
 // newBotRig is the router of approval_e2e_test.go with its approval section as given, a Telegram
@@ -534,6 +535,13 @@ func newBotRigUnlock(t *testing.T, approval, unlock string) *botRig {
 	}
 	r.tg = newTGStandIn(t, r.ca.leaf(t, telegramHost))
 	r.pipe = startTestPipe(t, r.tg.addr())
+	// Every bot the test started is gone before its directories are removed: a loop that still writes
+	// its seen file would leave a directory that cannot be removed.
+	t.Cleanup(func() {
+		for _, b := range r.bots {
+			b.wait()
+		}
+	})
 	r.runBot()
 	return r
 }
@@ -545,6 +553,7 @@ func (r *botRig) runBot() {
 	r.t.Cleanup(cancel)
 	r.bot = r.s.startOwnerBot(ctx, ownerBotOptions{relay: r.pipe.path, relayUID: os.Getuid(), roots: r.ca.pool,
 		mono: r.mono.now})
+	r.bots = append(r.bots, r.bot)
 }
 
 // ownerBot runs the CLI the way LuCI will: the token on standard input.

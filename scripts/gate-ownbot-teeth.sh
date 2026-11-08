@@ -55,6 +55,9 @@ plant check_init_makes_the_pipe_dir "the socket elsewhere" telegram.go 's|/var/r
 plant check_factor_deleted_before_read "the reply to Approve read before it is deleted" ownbot.go '/^func (b \*ownerBot) factor(/,/^}/{s/^\(\t\)b.deleteMsg(ctx, tc, m)/\1defer b.deleteMsg(ctx, tc, m)/;}'
 plant check_factor_deleted_before_read "an /unlock never deleted" ownbot.go '/^func (b \*ownerBot) unlock(/,/^}/{/^\tb.deleteMsg(ctx, tc, m)/d;}'
 
+plant check_bot_failures_are_words "a log line prints the error" ownbot.go 's|could not send a message: %s", botFailure(err))|could not send a message: %v", err)|'
+plant check_bot_failures_are_words "the seen file written from the error's text" ownbot.go 's|s.Failure = botFailure(err)|s.Failure = err.Error()|'
+
 # A word in a comment is not code: the refusal of action_approve commented out.
 fresh
 sed -i.bak '/^func (s \*Server) actionApprove(/,/^}/{s|^\(\t\)if err := s.mcpApproverRefusal(); err != nil {|\1// if err := s.mcpApproverRefusal(); err != nil {\n\tif false {|;}' "$TMP/t/approval.go"

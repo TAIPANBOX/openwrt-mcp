@@ -375,7 +375,8 @@ The helper still opens no IP socket. The listener serves a pipe on
 runs TLS for `api.telegram.org` over it against the system's roots, TLS 1.2 at least, with no proxy. A
 listener that alters what it carries breaks the connection, and one that answers in Telegram's place
 fails the certificate. The token lives in `/etc/openwrt-mcp/owner-bot/token` (0600) and in no error or
-log line. Approving needs the internet and Telegram, as it did before. A router with no bot bound
+log line; a failure of the bot is told by one word of a fixed set (`token_rejected`, `tls`, `pipe`,
+`network` and the rest), never by an error's text. Approving needs the internet and Telegram, as it did before. A router with no bot bound
 keeps the owner's client, and its approval then passes the listener
 ([privilege-split.md](privilege-split.md#what-this-holds-and-what-it-does-not)).
 

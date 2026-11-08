@@ -184,7 +184,7 @@ func TestAListenerThatAltersTheBytesBreaksTheConnection(t *testing.T) {
 	n := len(r.tg.sentTo(testOwner))
 	r.tg.tap(testOwner, card.ID, card.Keyboard[0][0].Data)
 	waitFor(t, "the bot to fail on the altered bytes", 15*time.Second, func() bool {
-		return strings.Contains(ownerBotFilesOf(r.state).seen().Error, "tls")
+		return ownerBotFilesOf(r.state).seen().Failure == "tls"
 	})
 	never(t, "an update read through altered bytes was acted on", 2*time.Second, func() bool {
 		return len(r.tg.sentTo(testOwner)) > n || r.ran("board")
@@ -211,7 +211,7 @@ func TestAListenerThatAnswersInTelegramsPlaceIsRefused(t *testing.T) {
 			r.pipe.target.Store(imp.addr())
 			code := r.bindCode()
 			waitFor(t, "the bot to refuse the impostor's certificate", 15*time.Second, func() bool {
-				return strings.Contains(ownerBotFilesOf(r.state).seen().Error, "certificate")
+				return ownerBotFilesOf(r.state).seen().Failure == "tls"
 			})
 			imp.say(testOwner, testOwner, "private", "/start "+code)
 			never(t, "the impostor was asked something", 2*time.Second, func() bool {
@@ -234,7 +234,7 @@ func TestThePipeServesTheHelperOnly(t *testing.T) {
 	r.runBot()
 	r.ownerBot(testBotToken+"\n", "set")
 	waitFor(t, "the helper to try the pipe", 30*time.Second, func() bool {
-		return r.pipe.dials.Load() > 0 || ownerBotFilesOf(r.state).seen().Error != ""
+		return r.pipe.dials.Load() > 0 || ownerBotFilesOf(r.state).seen().Failure != ""
 	})
 	if n := r.pipe.dials.Load(); n > 0 {
 		t.Fatalf("the pipe dialled %d time(s) for a peer that is not the one it serves", n)

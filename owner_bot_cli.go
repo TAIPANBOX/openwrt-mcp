@@ -26,8 +26,9 @@ type ownerBotStatus struct {
 	Bound      bool   `json:"bound"`
 	Chat       int64  `json:"chat,omitempty"`
 	Bot        string `json:"bot,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Binding    bool   `json:"binding"`
+	// Failure is the last failure, one word of botFailures; never an error's text.
+	Failure string `json:"failure,omitempty"`
+	Binding bool   `json:"binding"`
 	// Channel is where held changes are approved: "bot" once a chat is bound, "mcp" before.
 	Channel string `json:"channel"`
 }
@@ -35,7 +36,7 @@ type ownerBotStatus struct {
 func ownerBotStatusOf(statePath string) ownerBotStatus {
 	f := ownerBotFilesOf(statePath)
 	seen := f.seen()
-	st := ownerBotStatus{Configured: f.token() != "", Chat: f.chat(), Bot: seen.Bot, Error: seen.Error,
+	st := ownerBotStatus{Configured: f.token() != "", Chat: f.chat(), Bot: seen.Bot, Failure: seen.Failure,
 		Binding: f.bindHash() != "", Channel: "mcp"}
 	st.Bound = st.Configured && st.Chat != 0
 	if st.Bound {
@@ -129,8 +130,8 @@ func runOwnerBot(w io.Writer, stdin io.Reader, statePath string, args []string) 
 		if st.Binding {
 			fmt.Fprintln(w, "  a binding code is waiting to be sent")
 		}
-		if st.Error != "" {
-			fmt.Fprintf(w, "  last error: %s\n", st.Error)
+		if st.Failure != "" {
+			fmt.Fprintf(w, "  last failure: %s (%s)\n", botFailures[st.Failure], st.Failure)
 		}
 		return nil
 

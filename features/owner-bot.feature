@@ -152,10 +152,16 @@ Feature: the owner approves past the listener, through the router's own bot
     Then the helper sends it nothing, not even a TLS hello
     And the binary's only IP sockets are the listener's and the status probe's
 
-  # bound to: TestTheBotsTokenIsInNoErrorAndNoFile, TestTheClientsErrorsHoldNoToken
+  # bound to: TestTheBotsTokenIsInNoErrorAndNoFile, TestTheClientsErrorsHoldNoToken, TestTheSourceSaysAFailureByItsWordOnly
   Scenario: the bot's token is in no error and no file but its own
     When the transport fails with the URL, which holds the token, in its error
     Then neither the client's error, the log, the status nor the seen file holds the token
+
+  # bound to: TestTheBotsFailureIsOneWordOfAFixedSet
+  Scenario: a failure of the bot is told by one word of a fixed set
+    When Telegram does not know the token, a certificate is not api.telegram.org's, or the pipe is not the listener's
+    Then the seen file, the status and the log say token_rejected, tls or pipe, and nothing of the error's text
+    And a seen file holding anything else is read as other, so its text never reaches the status
 
   # bound to: TestTelegramAnswersAreReadWithinTheirBounds, TestTelegramDecoderSurvivesASweepOfHostileAnswers, TestAFactorIsReadAsTheOwnerTypesIt
   Scenario: what Telegram sends is read within its bounds

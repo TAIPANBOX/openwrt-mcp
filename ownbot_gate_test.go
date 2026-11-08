@@ -43,6 +43,10 @@ func TestTheSourceDeletesAFactorBeforeItReadsIt(t *testing.T) {
 	ownbotCheck(t, "check_factor_deleted_before_read")
 }
 
+func TestTheSourceSaysAFailureByItsWordOnly(t *testing.T) {
+	ownbotCheck(t, "check_bot_failures_are_words")
+}
+
 func TestOwnbotGateHasTeeth(t *testing.T) {
 	out, err := exec.Command("sh", "scripts/gate-ownbot-teeth.sh").CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "every planted fault is caught") {

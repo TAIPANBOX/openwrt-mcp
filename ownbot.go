@@ -29,6 +29,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -155,16 +156,67 @@ func (f ownerBotFiles) write(name, body string) error {
 
 func (f ownerBotFiles) remove(name string) { _ = os.Remove(f.path(name)) }
 
-// botSeen is what the helper last learned of the bot, for status. It decides nothing.
+// botSeen is what the helper last learned of the bot, for status. It decides nothing. A failure is
+// one word of botFailures and never an error's text, which could carry what a URL carried.
 type botSeen struct {
-	Bot   string `json:"bot,omitempty"`
-	Error string `json:"error,omitempty"`
+	Bot     string `json:"bot,omitempty"`
+	Failure string `json:"failure,omitempty"`
 }
 
 func (f ownerBotFiles) seen() botSeen {
 	var s botSeen
 	_ = json.Unmarshal([]byte(f.read("seen", 4096)), &s)
+	if s.Failure != "" && botFailures[s.Failure] == "" {
+		s.Failure = "other" // a file this binary did not write as it writes it
+	}
+	if !botNameShape.MatchString(s.Bot) {
+		s.Bot = ""
+	}
 	return s
+}
+
+// botNameShape is a bot's username as Telegram allows it.
+var botNameShape = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+
+// botFailures are the words a failure of the bot is told by, in the seen file, the status and the
+// log, each with what it says. Nothing else is said of a failure outside the helper's memory.
+var botFailures = map[string]string{
+	"token_rejected":   "Telegram does not know the token",
+	"telegram_refused": "Telegram refused a call",
+	"telegram_error":   "Telegram answered with an error",
+	"tls":              "the connection to api.telegram.org failed its TLS check",
+	"pipe":             "the listener's pipe could not be reached, or is not the listener's",
+	"network":          "api.telegram.org could not be reached",
+	"other":            "a failure this binary does not name",
+}
+
+// botFailure is the word for what went wrong: the kind of failure, never its text.
+func botFailure(err error) string {
+	var te *telegramError
+	var pe *pipeError
+	var ae tls.AlertError
+	var he tls.RecordHeaderError
+	var ve *tls.CertificateVerificationError
+	var ue x509.UnknownAuthorityError
+	var hn x509.HostnameError
+	var ci x509.CertificateInvalidError
+	var oe *net.OpError
+	switch {
+	case errors.As(err, &te) && te.code == 401:
+		return "token_rejected"
+	case errors.As(err, &te) && te.code >= 400 && te.code < 500:
+		return "telegram_refused"
+	case errors.As(err, &te):
+		return "telegram_error"
+	case errors.As(err, &pe):
+		return "pipe"
+	case errors.As(err, &ve), errors.As(err, &ue), errors.As(err, &hn), errors.As(err, &ci),
+		errors.As(err, &ae), errors.As(err, &he):
+		return "tls"
+	case errors.As(err, &oe) && (oe.Op == "local error" || oe.Op == "remote error"):
+		return "tls" // how crypto/tls reports an alert, a record that fails its check among them
+	}
+	return "network"
 }
 
 // ownerBotChannel says whether the router's own bot is the approval channel: a token set and a chat
@@ -264,6 +316,8 @@ type ownerBot struct {
 	bindSeen map[string]time.Duration // bind hash -> when the helper first saw it
 	retry    map[string]botRetry      // a card Telegram did not take, by record id ("edit:" for its edit)
 	seen     botSeen
+
+	loops sync.WaitGroup // the two loops, so a caller that ended ctx can wait for them to be gone
 }
 
 // botRetry is when a card that Telegram did not take is tried again, and the wait after that.
@@ -293,10 +347,14 @@ func (s *Server) startOwnerBot(ctx context.Context, opt ownerBotOptions) *ownerB
 	b.watchBind()
 	b.mu.Unlock()
 	s.bot.Store(b)
-	go b.poll(ctx)
-	go b.cardsLoop(ctx)
+	b.loops.Add(2)
+	go func() { defer b.loops.Done(); b.poll(ctx) }()
+	go func() { defer b.loops.Done(); b.cardsLoop(ctx) }()
 	return b
 }
+
+// wait returns once both loops have ended, which they do once their ctx is done.
+func (b *ownerBot) wait() { b.loops.Wait() }
 
 // client is the Telegram client of the token on disk, made again when the token changes. A new
 // token starts from nothing: no cards, no prompt.
@@ -401,22 +459,18 @@ func (b *ownerBot) noteErr(err error) {
 
 func (b *ownerBot) noteLocked(name string, err error) {
 	s := b.seen
-	if name != "" {
+	if name != "" && botNameShape.MatchString(name) {
 		s.Bot = name
 	}
-	s.Error = ""
+	s.Failure = ""
 	if err != nil {
-		s.Error = printable(err.Error())
-		if b.token != "" {
-			s.Error = strings.ReplaceAll(s.Error, b.token, "<token>")
-		}
-		s.Error = truncate(s.Error, 300)
+		s.Failure = botFailure(err)
 	}
 	if s == b.seen {
 		return
 	}
-	if s.Error != "" && s.Error != b.seen.Error {
-		log.Printf("openwrt-mcp: the router's bot: %s", s.Error)
+	if s.Failure != "" && s.Failure != b.seen.Failure {
+		log.Printf("openwrt-mcp: the router's bot: %s (%s)", botFailures[s.Failure], s.Failure)
 	}
 	b.seen = s
 	if js, err := json.Marshal(s); err == nil {
@@ -476,7 +530,7 @@ func (b *ownerBot) say(ctx context.Context, tc *telegramClient, chat int64, text
 	cctx, cancel := context.WithTimeout(ctx, telegramCallWait)
 	defer cancel()
 	if _, err := tc.send(cctx, chat, text, nil); err != nil {
-		log.Printf("openwrt-mcp: the router's bot could not send a message: %v", err)
+		log.Printf("openwrt-mcp: the router's bot could not send a message: %s", botFailure(err))
 	}
 }
 
@@ -484,7 +538,7 @@ func (b *ownerBot) deleteMsg(ctx context.Context, tc *telegramClient, m *tgMessa
 	cctx, cancel := context.WithTimeout(ctx, telegramCallWait)
 	defer cancel()
 	if err := tc.delete(cctx, m.Chat.ID, m.MessageID); err != nil {
-		log.Printf("openwrt-mcp: the router's bot could not delete a message: %v", err)
+		log.Printf("openwrt-mcp: the router's bot could not delete a message: %s", botFailure(err))
 	}
 }
 

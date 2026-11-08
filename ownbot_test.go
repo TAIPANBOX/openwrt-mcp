@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -381,7 +382,11 @@ func TestTheBotsTokenIsInNoErrorAndNoFile(t *testing.T) {
 	defer log.SetOutput(os.Stderr)
 	r.pipe.target.Store("127.0.0.1:1") // nothing answers there
 	r.ownerBot(testBotToken+"\n", "set")
-	waitFor(t, "the bot to note its error", 15*time.Second, func() bool { return ownerBotFilesOf(r.state).seen().Error != "" })
+	waitFor(t, "the bot to note its failure", 15*time.Second, func() bool { return ownerBotFilesOf(r.state).seen().Failure != "" })
+	// The bot stopped before the log is read: its loops write to it.
+	r.cancel()
+	r.bot.wait()
+	log.SetOutput(os.Stderr)
 	seen, _ := os.ReadFile(ownerBotFilesOf(r.state).path("seen"))
 	var st bytes.Buffer
 	json.NewEncoder(&st).Encode(ownerBotStatusOf(r.state))
@@ -390,8 +395,8 @@ func TestTheBotsTokenIsInNoErrorAndNoFile(t *testing.T) {
 			t.Errorf("%s holds the bot's token: %s", what, b)
 		}
 	}
-	if !strings.Contains(string(seen), "telegram get") {
-		t.Errorf("the error does not say what failed: %s", seen)
+	if !strings.Contains(string(seen), `"failure":"network"`) {
+		t.Errorf("the failure is not said as its word: %s", seen)
 	}
 }
 
@@ -583,7 +588,7 @@ func TestACardTelegramRefusesDoesNotHoldBackTheNext(t *testing.T) {
 	r.tg.refuse = func(text string) bool { return refusing.Load() && strings.Contains(text, "("+a+",") }
 	r.tg.mu.Unlock()
 	waitFor(t, "the bot to note the refused card", 10*time.Second, func() bool {
-		return strings.Contains(ownerBotFilesOf(r.state).seen().Error, "sendMessage")
+		return ownerBotFilesOf(r.state).seen().Failure == "telegram_refused"
 	})
 	b := r.heldUbus("info")
 	r.cardOf(b)
@@ -654,4 +659,68 @@ func TestAHeldCardMustFitOneTelegramMessage(t *testing.T) {
 		t.Fatalf("a card over one message was held: %q", out)
 	}
 	r.mustHold(r.ubusCall("system", "board", map[string]any{"note": strings.Repeat("x", 2000)}))
+}
+
+// What went wrong with the bot is told outside the helper by one word of a fixed set, never by an
+// error's text, which could carry what a URL carried: a token Telegram does not know, a pipe that is
+// not the listener's, a certificate that fails, a network that does not answer. A seen file that
+// holds anything else is read as "other", and the status never shows the text.
+func TestTheBotsFailureIsOneWordOfAFixedSet(t *testing.T) {
+	words := map[string]bool{"token_rejected": true, "telegram_refused": true, "telegram_error": true, "tls": true,
+		"pipe": true, "network": true, "other": true}
+	seenOf := func(r *botRig) map[string]any {
+		var m map[string]any
+		b, _ := os.ReadFile(ownerBotFilesOf(r.state).path("seen"))
+		_ = json.Unmarshal(b, &m)
+		return m
+	}
+	failureOf := func(r *botRig) string {
+		var m map[string]any
+		b, _ := json.Marshal(ownerBotStatusOf(r.state))
+		_ = json.Unmarshal(b, &m)
+		s, _ := m["failure"].(string)
+		return s
+	}
+	waitWord := func(r *botRig, want string) {
+		t.Helper()
+		waitFor(t, "the failure "+want, 20*time.Second, func() bool { return failureOf(r) == want })
+		for k, v := range seenOf(r) {
+			if k != "bot" && k != "failure" {
+				t.Fatalf("the seen file holds %q: %v", k, v)
+			}
+		}
+		if f, _ := seenOf(r)["failure"].(string); !words[f] {
+			t.Fatalf("the seen file's failure is not a word of the set: %q", f)
+		}
+	}
+
+	// A token Telegram does not know.
+	r := newBotRig(t, "")
+	r.ownerBot("987654321:ANOTHER-test-token-AAAAAAAAAAAAAAAAAA\n", "set")
+	waitWord(r, "token_rejected")
+
+	// A certificate that is not api.telegram.org's.
+	r = newBotRig(t, "")
+	imp := newTGStandIn(t, newTestCA(t, "impostor CA").leaf(t, telegramHost))
+	r.pipe.target.Store(imp.addr())
+	r.ownerBot(testBotToken+"\n", "set")
+	waitWord(r, "tls")
+
+	// A pipe that is not the listener's.
+	r = newBotRig(t, "")
+	r.cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	r.bots = append(r.bots, r.s.startOwnerBot(ctx, ownerBotOptions{relay: r.pipe.path, relayUID: os.Getuid() + 1, roots: r.ca.pool, mono: r.mono.now}))
+	r.ownerBot(testBotToken+"\n", "set")
+	waitWord(r, "pipe")
+
+	// A seen file holding text, as a broken writer could leave it: the status says "other" and not the text.
+	if err := ownerBotFilesOf(r.state).write("seen", `{"bot":"x","failure":"Post https://api.telegram.org/bot`+testBotToken+`/getMe"}`); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(ownerBotStatusOf(r.state))
+	if strings.Contains(string(b), "TEST-not-a-real-token") || failureOf(r) != "other" {
+		t.Fatalf("a failure that is not a word reached the status: %s", b)
+	}
 }

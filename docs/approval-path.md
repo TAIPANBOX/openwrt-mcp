@@ -405,7 +405,9 @@ routes the owner's factor back through the listener and must turn it red.
 - **Files.** `/etc/openwrt-mcp/owner-bot/`, root's, `0700`, each file `0600` with one writer: `token`
   (the CLI, from standard input), `bind` (the CLI writes the code's SHA-256, the helper removes it),
   `chat` (the helper writes the bound id), `seen` (the helper writes the bot's name and its last
-  error, for `status`).
+  failure, for `status`). A failure is one word of a fixed set (`token_rejected`, `telegram_refused`,
+  `telegram_error`, `tls`, `pipe`, `network`, `other`), in that file, in the status and in the log,
+  and never an error's text, which could carry what a URL carried.
 - **In the chat.** The card is the record's card, plain text, with Approve and Reject. Approve
   restates the headline from the record and opens a prompt of 180 seconds; the next text from the
   owner is deleted, then read as `PIN code` (or `code`, for a section whose factor is `totp`), and

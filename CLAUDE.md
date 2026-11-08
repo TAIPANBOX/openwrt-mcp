@@ -132,7 +132,8 @@ before the 2026-10-17 security wave, so the numbering starts here.
     bound only by the one-time code `owner-bot bind` makes, before the end written in its file and
     within 30 minutes of the helper's own clock, and until then the bot answers nobody. While a chat is bound, no MCP client lists, approves, rejects, unlocks or
     locks for an approval section, and binding revokes the approver clients' tokens. The bot's token is
-    in no error and no file but its own. A router with no bot bound keeps the MCP approver path, and
+    in no error and no file but its own, and a failure of the bot is told outside the helper (its seen
+    file, the status, the log) by one word of a fixed set, never by an error's text. A router with no bot bound keeps the MCP approver path, and
     the listener then carries its factor (`docs/privilege-split.md`). `@decided 2026-11-08`: the
     router's own bot (option A2), paraphrased in ownbot.go's header and in `docs/approval-path.md`.
     (gate: `scripts/gate-ownbot.sh`, teeth: `scripts/gate-ownbot-teeth.sh`; test:
