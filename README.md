@@ -18,10 +18,12 @@ on every configuration change.
 ![openwrt-mcp on the router: Hermes on loopback or a client through an SSH tunnel; the token, the standing policy, the hold for the owner, the unlock window and the audit log; then ubus, uci, exec, logread, apk_add and wg_new_client](docs/hero.svg)
 
 **Current release**, in the signed [hermes-openwrt](https://github.com/TAIPANBOX/hermes-openwrt)
-feed since 2026-11-08: `openwrt-mcp` 0.5.0.9-r1 (tag `v0.5.0-taipanbox.9`) for OpenWrt 25.12 on
+feed since 2026-11-08: `openwrt-mcp` 0.5.0.10-r1 (tag `v0.5.0-taipanbox.10`) for OpenWrt 25.12 on
 `aarch64_cortex-a53` and `aarch64_generic`, built with Go 1.27.3 from this fork's `main`. The part
 that listens runs as its own account with no capability, and the part that holds root does not
-listen ([privilege-split.md](docs/privilege-split.md)). Every release is in [CHANGELOG.md](CHANGELOG.md).
+listen ([privilege-split.md](docs/privilege-split.md)). With the router's own bot set up, the owner's
+card and factor travel between that root part and Telegram and never pass the listener
+([approval-path.md](docs/approval-path.md)). Every release is in [CHANGELOG.md](CHANGELOG.md).
 
 > This is the TAIPANBOX fork of **[GlassOnTin/openwrt-mcp](https://github.com/GlassOnTin/openwrt-mcp)**
 > by **Ian Williams**, under the MIT licence. The resident daemon, its tools, the policy engine, the

@@ -149,6 +149,25 @@ The scenarios, by feature file:
 
 ## On routers with vanilla OpenWrt 25.12
 
+**2026-11-08, a GL.iNet Flint 2 (GL-MT6000), OpenWrt 25.12.5, 0.5.0.10 from the signed hermes-openwrt
+feed** with hermes-agent 0.21.5-r24 and luci-app-hermes 0.21.5-r7 in the owner profile, upgraded from
+0.5.0.9 with `apk upgrade hermes-agent luci-app-hermes openwrt-mcp`, no reboot, the router's own bot not yet
+set up:
+
+| | `helper` | `serve` |
+|---|---|---|
+| Uid | 0 | 32769, the account `openwrt-mcp` |
+| CapEff, CapPrm, CapBnd | `30fb` | all 0, CapAmb 0 too |
+| NoNewPrivs, Seccomp | 1, 2 on all 9 threads | 1, 2 on all 7 threads |
+| Sockets | one, the Unix socket `/var/run/openwrt-mcp/helper.sock` | 127.0.0.1:8730, and the pipe to Telegram `/var/run/openwrt-mcp-relay/telegram.sock` |
+
+The pipe's directory is `0700` and the socket `0600`, both owned by `openwrt-mcp`. `/health` answered
+`openwrt-mcp 0.5.0.10 ok`, `status` reported `owner_approves_past_the_listener`, and `owner-bot status --json`
+said `configured`, `bound` and `binding` false with `channel` `mcp`: until the owner binds a chat, the MCP
+approver path stays as it was. Hermes, restarted, discovered nine tools through the listener, and a one-off
+scheduled job read the hostname with `uci_get`, audited as client `hermes-main`, OK. The earlier packages stay
+on the router for a way back.
+
 **2026-11-08, a GL.iNet Flint 2 (GL-MT6000), OpenWrt 25.12.5, 0.5.0.9 from the signed hermes-openwrt
 feed** with hermes-agent 0.21.5-r23 in the owner profile, upgraded from 0.5.0.8 with `apk upgrade
 hermes-agent openwrt-mcp`, no reboot:
