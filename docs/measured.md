@@ -35,8 +35,8 @@ lasted. No real bot or token took part.
 | the helper's IP sockets | 0 (3 Unix sockets), NoNewPrivs 1, Seccomp 2, CapEff `30fb` | 0 |
 
 The same run passed TestJailVlab's 22 subtests on this tree. In the test suite on the same host: the
-bot's tests under `-race`; `mutate-held.py` 169 and `mutate-split.py` 29 mutants, each caught by the
-test named for it; `FuzzTelegramUpdates` ran 1,392,133 inputs in two minutes with no failure; the
+whole package under `-race` (468 s); `mutate-ownbot.py` 44, `mutate-held.py` 169 and `mutate-split.py`
+29 mutants, each caught by the test named for it; `FuzzTelegramUpdates` ran 1,392,133 inputs in two minutes with no failure; the
 package's statement coverage read 89.7%, against 90.3% on origin/main, the difference being the
 listener's dial to Telegram and the start of its pipe, which the vlab run above exercises and the
 unit tests stand a server in for.
