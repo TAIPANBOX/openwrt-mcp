@@ -11,7 +11,7 @@ var deniedTable = map[string]uint32{
 	"delete_module": unix.SYS_DELETE_MODULE, "kexec_load": unix.SYS_KEXEC_LOAD, "kexec_file_load": unix.SYS_KEXEC_FILE_LOAD,
 	"reboot": unix.SYS_REBOOT, "bpf": unix.SYS_BPF, "perf_event_open": unix.SYS_PERF_EVENT_OPEN,
 	"userfaultfd": unix.SYS_USERFAULTFD, "keyctl": unix.SYS_KEYCTL, "add_key": unix.SYS_ADD_KEY,
-	"request_key": unix.SYS_REQUEST_KEY, "mount": unix.SYS_UMOUNT2, "umount2": unix.SYS_UMOUNT2,
+	"request_key": unix.SYS_REQUEST_KEY, "mount": unix.SYS_MOUNT, "umount2": unix.SYS_UMOUNT2,
 	"pivot_root": unix.SYS_PIVOT_ROOT, "fsopen": unix.SYS_FSOPEN, "fsconfig": unix.SYS_FSCONFIG,
 	"fsmount": unix.SYS_FSMOUNT, "fspick": unix.SYS_FSPICK, "move_mount": unix.SYS_MOVE_MOUNT,
 	"open_tree": unix.SYS_OPEN_TREE, "mount_setattr": unix.SYS_MOUNT_SETATTR, "unshare": unix.SYS_UNSHARE,
