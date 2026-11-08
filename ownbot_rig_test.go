@@ -579,14 +579,19 @@ func (r *botRig) bindCode() string {
 	return v.Code
 }
 
-// bind sets the bot up and binds the owner's chat by pressing Start on the link.
+// bind sets the bot up and binds the owner's chat by pressing Start on the link. It returns once the
+// bot has said the chat approves: the helper writes the chat file first and only then revokes the
+// approvers' tokens and keeps the audit line, so a test that went on as soon as the file appeared could
+// read the tokens in between (a red main run of TestWithTheBotBoundNoMCPClientDecides on 0f9611f).
 func (r *botRig) bind() {
 	r.t.Helper()
 	code := r.bindCode()
+	n := len(r.tg.sentTo(testOwner))
 	r.tg.say(testOwner, testOwner, "private", "/start "+code)
 	waitFor(r.t, "the owner's chat to be bound", 10*time.Second, func() bool {
 		return ownerBotFilesOf(r.state).chat() == testOwner
 	})
+	r.waitText(testOwner, n, "This chat now approves changes for")
 }
 
 // cardOf waits for the card of record id in the owner's chat.
