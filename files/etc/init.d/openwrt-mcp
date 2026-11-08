@@ -1,4 +1,31 @@
 #!/bin/sh /etc/rc.common
+# openwrt-mcp under procd, in a jail.
+#
+# The daemon stays root, and the reason is its job, not a habit: it commits /etc/config (mode 0600
+# for network and wireless), starts uci, ubus and apk for an agent, and apk writes anywhere in the
+# root file system. What the jail takes from it is everything those jobs do not use:
+#
+#   - the file system: only /etc, /usr, /lib, /bin, /sbin, /www and the run-time directories under
+#     /tmp are there, and all of them read-write because apk_add can write into any of them. Not
+#     there: /root, /overlay, /mnt, /rom, /boot, and every device node but null, zero, full, random,
+#     urandom, tty, ptmx and the log socket. /sys and /proc/sys are read-only.
+#   - the pid, ipc, mount and uts namespaces (not the network one: the daemon listens on the
+#     router's loopback and its programs configure the router's interfaces).
+#   - the capabilities: /etc/capabilities/openwrt-mcp.json names nine, in all five sets, so the
+#     bounding set holds for every program the daemon starts. Missing: CAP_SYS_ADMIN,
+#     CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_PTRACE, CAP_SYS_BOOT, CAP_SYS_TIME, CAP_MKNOD,
+#     CAP_SETPCAP, CAP_BPF and the rest.
+#   - no_new_privs, so no program it starts gains anything from a setuid file.
+#
+# Seccomp is not set here: procd applies a profile through LD_PRELOAD, which a static Go binary
+# never loads (the sibling daemons measured Seccomp 0 that way), and which would reach the dynamic
+# programs the daemon starts instead. `openwrt-mcp serve` installs its own filter, first thing, and
+# refuses to listen unless the kernel shows it in force (seccomp_linux.go, seccomp/denied.txt).
+#
+# requirejail: without a working ujail the daemon does not start, instead of running outside the
+# jail. What this costs a program started by `exec` is in docs/security.md: it sees only the
+# jail's own processes, so ps, kill and pidof do not reach the router's, and sysupgrade -b,
+# firstboot and mtd, which need the root file system or the flash devices, do not work from it.
 
 USE_PROCD=1
 START=95
@@ -12,6 +39,13 @@ start_service() {
 	procd_set_param respawn
 	procd_set_param stdout 1
 	procd_set_param stderr 1
+	# ujail hands the daemon an environment of one variable; the programs it starts look for
+	# uci, ubus and apk on PATH.
+	procd_set_param env PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	procd_set_param no_new_privs 1
+	procd_set_param capabilities /etc/capabilities/openwrt-mcp.json
+	procd_add_jail openwrt-mcp log ubus procfs sysfs requirejail
+	procd_add_jail_mount_rw /etc /usr /lib /bin /sbin /www /tmp /var/run /var/lock /var/log /var/state
 	procd_close_instance
 }
 

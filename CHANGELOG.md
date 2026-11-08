@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+**The daemon runs in a procd jail, with no_new_privs, a capability set of nine and its own seccomp
+filter.** The first step of the estate's gap G3.14; the daemon stays root, and the second step, the
+split of the part that parses input from the part that acts, is not in this change.
+[docs/security.md](docs/security.md#the-daemon-runs-in-a-jail) says what is taken and what that costs
+a program started by `exec`.
+
+### Added
+
+- `/etc/capabilities/openwrt-mcp.json`, installed by the .apk, the .ipk and `make install`, and
+  carried across a firmware upgrade by `keep.d`.
+- `openwrt-mcp serve` installs a seccomp filter (`seccomp/denied.txt`) before it reads anything,
+  and refuses to listen unless the kernel shows it in force.
+- `scripts/gate-jail.sh` with its teeth in `scripts/gate-jail-teeth.sh`, `features/service-jail.feature`,
+  and `scripts/e2e-vlab.sh`, which runs every tool against the jailed daemon on a virtual router.
+
+### Changed
+
+- The init script starts the daemon through ujail with `requirejail`, `no_new_privs` and the
+  capability file.
+
 ## v0.5.0-taipanbox.8 (binary version 0.5.0.8)
 
 **Guessing the second factor costs time that grows, and a restart forgives none of it.**

@@ -464,6 +464,42 @@ and `persisted`. Tries reach that list only through the owner's token or from a 
 approval section, since the agent's own token spends none, which makes it what a plugin needs to
 tell the owner that someone else is trying. The agent's own view carries none of it.
 
+## The daemon runs in a jail
+
+The daemon is root, and stays root: it commits `/etc/config` (mode 0600 for `network` and
+`wireless`), starts `uci`, `ubus` and `apk` for an agent, and `apk_add` writes anywhere in the root
+file system. What the init script takes from it is what those jobs never use. It is checked in
+`scripts/gate-jail.sh` and shown on a running router by `scripts/e2e-vlab.sh`.
+
+| Taken away | How |
+|---|---|
+| Most of the file system | procd's jail has `/etc`, `/usr`, `/lib`, `/bin`, `/sbin`, `/www` and `/tmp` with the run-time directories under `/var`, all read-write because `apk_add` can write into any of them. `/root`, `/overlay`, `/mnt`, `/rom`, `/boot` and every device node but `null`, `zero`, `full`, `random`, `urandom`, `tty`, `ptmx` and the log socket are not there; `/sys` and `/proc/sys` are read-only |
+| The router's process table | a pid, ipc, mount and uts namespace of its own; the network namespace is the router's, because the daemon listens on its loopback and the programs it starts configure its interfaces |
+| Nearly every capability | `/etc/capabilities/openwrt-mcp.json` names nine in all five lists, so the bounding set holds for every program the daemon starts: `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`, `CAP_FSETID`, `CAP_KILL`, `CAP_SETUID`, `CAP_SETGID`, `CAP_NET_ADMIN`, `CAP_NET_RAW`. Without `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME`, `CAP_MKNOD` and the rest |
+| Privilege from a setuid file | `no_new_privs` |
+| Forty system calls, and clone into a namespace | the daemon's own seccomp filter ([seccomp/denied.txt](../seccomp/denied.txt)): `ptrace`, `mount` and the new mount API, `unshare`, `setns`, the module calls, `kexec`, `reboot`, `bpf`, `keyctl`, the clock calls and the file-handle calls end the caller with SIGSYS; `clone` with a namespace flag does the same, and `clone3` answers ENOSYS so libc falls back to `clone`, whose flags the filter can read |
+
+The filter is the daemon's own and not procd's profile, because procd applies a profile through
+`LD_PRELOAD`, which a static Go binary never loads. It is a deny-list, not an allow-list, because the
+daemon starts `uci`, `ubus`, `apk` and whatever a grant names, and every one of them inherits it. It
+goes on first thing in `serve`, on every thread, and the daemon does not listen unless
+`/proc/self/status` shows `NoNewPrivs: 1` and `Seccomp: 2`. It is built for amd64 and arm64 and is
+off elsewhere. The init script says `requirejail`: on a router where ujail cannot build the jail the
+daemon does not start, rather than running outside it.
+
+What this takes from a program started by `exec`, which the jail cannot give back without giving
+the jail up:
+
+- it sees only the jail's own processes, so `ps`, `pidof`, `kill` and `killall` do not reach the
+  router's; `reboot` (busybox signals pid 1, which is the jail's) and `ubus call system reboot` are
+  not the same thing: only the second reaches the router;
+- `sysupgrade -b` stops with "Cannot save config while running from ramdisk", because the jail's root
+  is a tmpfs; `firstboot` and `mtd` need `/overlay` and the flash devices;
+- `mount`, `unshare`, `insmod` and `date -s` end with SIGSYS or a refusal.
+
+`ubus call system sysupgrade`, a service restart through its init script, `ip`, `wg`, `ping`,
+`nft`, `logread`, `uci` and `apk` work, and so do all the other tools; `jail_vlab_test.go` runs each.
+
 ## How it behaves at its edges
 
 - **A client without an approval section has nothing denied permanently.** `sysupgrade`,
