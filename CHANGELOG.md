@@ -37,9 +37,9 @@ owner's grant and second factor, as before.
 - `/health` answers 503 when the helper does not answer, since the listener alone runs nothing.
 
 **The daemon runs with `no_new_privs`, a capability set of nine and its own seccomp filter, and does
-not listen unless the kernel shows all three.** (The helper, since the split above.) The first step of the estate's gap G3.14. It narrows
-the kernel surface; it builds no jail and does not contain a broken daemon, which is root with the
-whole of ubus and a writable `/etc`. `@decided 2026-11-08`: a light cage now, the split of the part
+not listen unless the kernel shows all three.** Since the split above, this is the helper's. The
+first step of the estate's gap G3.14. It narrows the kernel surface; it builds no jail and does not
+contain a broken daemon, which is root with the whole of ubus and a writable `/etc`. `@decided 2026-11-08`: a light cage now, the split of the part
 that parses input from the part that acts in a separate change after it.
 [docs/security.md](docs/security.md#the-daemons-kernel-surface-is-narrowed) says what is narrowed and
 what is not.
