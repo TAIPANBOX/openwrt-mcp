@@ -374,7 +374,7 @@ MUTANTS = [
     ("a stopped daemon reads as not persisted", "status.go", '\tc, err := net.DialTimeout("tcp", listen, 2*time.Second)\n\tif err != nil {\n\t\treturn false, true\n',
      '\tc, err := net.DialTimeout("tcp", listen, 2*time.Second)\n\tif err != nil {\n\t\treturn false, false\n',
      "TestProbeDaemonReportsNothingForAStoppedDaemon"),
-    ("/health says nothing of a failed write", "frontend.go", "\t\tif !persisted {\n", "\t\tif false {\n",
+    ("/health says nothing of a failed write", "frontend.go", "\t\tif !persisted {\n", "\t\tif !persisted && false {\n",
      "TestHealthSaysNothingWhileTheThrottleIsSaved"),
     ("the capability is gone", "status.go", '"second_factor_throttle_persisted": true,', '"second_factor_throttle_persisted_": true,',
      "TestCLIStatusJSONSaysTheThrottleIsPersisted"),
