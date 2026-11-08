@@ -149,6 +149,24 @@ The scenarios, by feature file:
 
 ## On routers with vanilla OpenWrt 25.12
 
+**2026-11-08, a GL.iNet Flint 2 (GL-MT6000), OpenWrt 25.12.5, 0.5.0.11 from the signed hermes-openwrt
+feed** with hermes-agent 0.21.5-r25 and luci-app-hermes 0.21.5-r8 in the owner profile, upgraded from
+0.5.0.10 with `apk upgrade hermes-agent luci-app-hermes openwrt-mcp`, no reboot, the router's own bot bound:
+
+| | `helper` | `serve` |
+|---|---|---|
+| Uid | 0 | 32769, the account `openwrt-mcp` |
+| CapEff, CapPrm, CapBnd | `30fb` | all 0, CapAmb 0 too |
+| NoNewPrivs, Seccomp | 1, 2 on all 9 threads | 1, 2 on all 6 threads |
+| Sockets | the Unix socket `/var/run/openwrt-mcp/helper.sock`, and its end of the pipe | 127.0.0.1:8730, and the pipe to Telegram `/var/run/openwrt-mcp-relay/telegram.sock` |
+
+`/health` answered `openwrt-mcp 0.5.0.11 ok`, `status` reported `owner_bot_tells_the_router`, and `owner-bot
+status --json` said `configured` and `bound`, `binding` false, `channel` `bot`. procd holds the trigger the agent's
+init registers on `openwrt-mcp.owner_bot`, and the restarted agent runs with the owner's approvals in the router's
+chat. Every file of the package is owned by root; under 0.5.0.10 all ten were `65534:65534`. The helper started a
+second before the listener and logged `pipe` once, then reached Telegram through the pipe on its next try. The
+earlier packages stay on the router for a way back.
+
 **2026-11-08, a GL.iNet Flint 2 (GL-MT6000), OpenWrt 25.12.5, 0.5.0.10 from the signed hermes-openwrt
 feed** with hermes-agent 0.21.5-r24 and luci-app-hermes 0.21.5-r7 in the owner profile, upgraded from
 0.5.0.9 with `apk upgrade hermes-agent luci-app-hermes openwrt-mcp`, no reboot, the router's own bot not yet
