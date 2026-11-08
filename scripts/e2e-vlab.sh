@@ -13,7 +13,10 @@
 # It needs: go, python3, `sudo -n` for the vlab binary, and the vlab image. It brings one router up
 # on 10.34.0.0/24 with a route to the internet (apk_add reaches the official feeds), installs the
 # package files by the same copy `make install` makes, runs TestJailVlab on the router, prints what
-# the kernel shows for each part, and takes the lab down.
+# the kernel shows for each part, then runs TestOwnBotVlab: the owner's approval through the router's
+# own bot against a Telegram stand-in served on the router (127.0.0.1:443, a CA made for the run and
+# the only one the router trusts while it lasts), with a hostile listener in the real one's place. It
+# takes the lab down at the end. E2E_ONLY=ownbot runs that test alone.
 set -eu
 
 REPO=${E2E_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -51,8 +54,14 @@ rput "$DAEMON/files/etc/config/openwrt-mcp" /etc/config/openwrt-mcp 644
 rput "$WORK/e2e.test" /tmp/e2e.test 755
 
 rc=0
+if [ "${E2E_ONLY:-}" != ownbot ]; then
 rsh 'cd /tmp && OPENWRT_MCP_JAIL_E2E=1 /tmp/e2e.test -test.run "^TestJailVlab$" -test.v -test.count=1 2>&1' > "$WORK/e2e.out" || rc=$?
 grep -E '^(---|    ---|        ---|SECCOMP|PROBE|VALUES|SOCKET|HELPER-STOPPED|FAIL|PASS|ok)|_vlab_test' "$WORK/e2e.out" || tail -30 "$WORK/e2e.out"
+fi
+
+echo "--- the owner's approval through the router's own bot, with a hostile listener"
+rsh 'cd /tmp && OPENWRT_MCP_OWNBOT_E2E=1 /tmp/e2e.test -test.run "^TestOwnBotVlab$" -test.v -test.count=1 2>&1' > "$WORK/ownbot.out" || rc=$?
+grep -E '^(---|OWNBOT|FAIL|PASS|ok)|_vlab_test' "$WORK/ownbot.out" || tail -30 "$WORK/ownbot.out"
 
 echo "--- what the kernel shows, from the router"
 rsh 'for p in $(pidof openwrt-mcp); do

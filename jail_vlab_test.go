@@ -199,7 +199,9 @@ func TestJailVlab(t *testing.T) {
 		if out := r.mustOK("agent", "uci_get", map[string]any{"config": "system"}); !strings.Contains(out, "hostname") {
 			t.Fatalf("uci_get: %q", out)
 		}
-		if out := r.mustOK("agent", "logread", map[string]any{"lines": 20}); !strings.Contains(out, "openwrt-mcp") {
+		// The daemon's lines are looked for by pattern: a router whose wan has just come up has dnsmasq's
+		// twenty lines after them, which once left none of the daemon's in the last twenty.
+		if out := r.mustOK("agent", "logread", map[string]any{"lines": 2000, "pattern": "openwrt-mcp"}); !strings.Contains(out, "openwrt-mcp") {
 			t.Fatalf("logread does not show the daemon: %q", out)
 		}
 	})
