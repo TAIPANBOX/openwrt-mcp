@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0-taipanbox.9 (binary version 0.5.0.9)
 
 **The part of the daemon that meets the network holds no root.** The second step of the estate's gap
 G3.14. The daemon is two processes: the listener (`openwrt-mcp serve`) parses HTTP and MCP as its own
