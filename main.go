@@ -55,6 +55,7 @@ func main() {
 
 	switch args[0] {
 	case "serve":
+		confine()
 		s, err := NewServer(*configPath, *statePath)
 		must(err)
 		stop := make(chan os.Signal, 1)

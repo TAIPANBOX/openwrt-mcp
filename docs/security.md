@@ -464,6 +464,45 @@ and `persisted`. Tries reach that list only through the owner's token or from a 
 approval section, since the agent's own token spends none, which makes it what a plugin needs to
 tell the owner that someone else is trying. The agent's own view carries none of it.
 
+## The daemon's kernel surface is narrowed
+
+`@decided 2026-11-08`: a light cage now, and a split of privileges in a separate change after it.
+
+The daemon is root, and stays root: it commits `/etc/config` (mode 0600 for `network` and
+`wireless`), starts `uci`, `ubus` and `apk` for an agent, and `apk_add` writes anywhere in the root
+file system. The init script takes from it what those jobs never use, and the daemon checks it
+before it listens. `scripts/gate-jail.sh` holds the files to it, and `scripts/e2e-vlab.sh` shows it
+on a running router.
+
+| Narrowed | How |
+|---|---|
+| Capabilities | `/etc/capabilities/openwrt-mcp.json` names nine, in all five lists, so the bounding set holds for every program the daemon starts: `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`, `CAP_FSETID`, `CAP_KILL`, `CAP_SETUID`, `CAP_SETGID`, `CAP_NET_ADMIN`, `CAP_NET_RAW`. Without `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME`, `CAP_MKNOD` and the rest |
+| Privilege from a setuid file | `no_new_privs` |
+| System calls | the daemon's own seccomp filter ([seccomp/denied.txt](../seccomp/denied.txt)): forty calls (`ptrace`, `mount` and the new mount API, `unshare`, `setns`, the module calls, `kexec`, `reboot`, `bpf`, `keyctl`, the clock calls, the file-handle calls) end the caller with SIGSYS; `clone` with a namespace flag does the same, `clone3` answers ENOSYS so libc falls back to `clone`, whose flags the filter can read, and every number with bit 30 set (the x32 ABI's) is killed |
+
+procd applies the capability file only through ujail, so the init script has a bare `procd_add_jail
+openwrt-mcp`: procd then runs `ujail -C <file> -c -- openwrt-mcp serve`, which drops capabilities and
+builds nothing (measured on OpenWrt 25.12.5: the same mount, pid and uts namespaces as init; without
+that line the daemon ran with `CapBnd 000001ffffffffff`). The seccomp filter is the daemon's own and
+not procd's profile, because procd applies a profile through `LD_PRELOAD`, which a static Go binary
+never loads. It is a deny-list, not an allow-list, because the daemon starts `uci`, `ubus`, `apk` and
+whatever a grant names, and every one of them inherits it. It goes on first thing in `serve`, on
+every thread, and is built for amd64 and arm64.
+
+**Fail closed.** Before it listens the daemon reads its own `/proc/self/status` and refuses to run
+unless `NoNewPrivs` is 1, `Seccomp` is 2, and `CapBnd` and `CapEff` are exactly the nine. A router
+where ujail is missing, or where procd did not apply the file, does not run the daemon.
+
+**What this is not.** It narrows what the kernel will do for the daemon and for every program it
+starts. It does not contain a broken daemon. The daemon is root with the whole of ubus (`ubus call
+service set` starts any command, outside the daemon's own process) and with write access to
+`/etc`, which holds its own init script, so root, ubus and the file system remain ways out. There is
+no jail on purpose: no mount, pid, ipc or uts namespace. A jail would hide `/root`, `/overlay` and
+the router's process table from the daemon and take `ps`, `kill`, `reboot`, `sysupgrade -b`,
+`firstboot` and `mtd` from every program `exec` starts, and it would not hold a daemon with those
+ways out. Closing them is the next step: splitting the part that parses input from the part that
+acts.
+
 ## How it behaves at its edges
 
 - **A client without an approval section has nothing denied permanently.** `sysupgrade`,

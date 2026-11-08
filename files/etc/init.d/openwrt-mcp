@@ -1,4 +1,30 @@
 #!/bin/sh /etc/rc.common
+# openwrt-mcp under procd, with a narrowed kernel surface.
+#
+# The daemon stays root, and the reason is its job, not a habit: it commits /etc/config (mode 0600
+# for network and wireless), starts uci, ubus and apk for an agent, and apk writes anywhere in the
+# root file system. What this script takes from it is what those jobs never use, and no more:
+#
+#   - the capabilities: /etc/capabilities/openwrt-mcp.json names nine, in all five sets, so the
+#     bounding set holds for every program the daemon starts. Missing: CAP_SYS_ADMIN,
+#     CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_PTRACE, CAP_SYS_BOOT, CAP_SYS_TIME, CAP_MKNOD,
+#     CAP_SETPCAP, CAP_BPF and the rest.
+#   - no_new_privs, so no program it starts gains anything from a setuid file.
+#   - system calls: `openwrt-mcp serve` installs its own seccomp filter first thing (seccomp/
+#     denied.txt). procd is not asked for a profile: it applies one through LD_PRELOAD, which a
+#     static Go binary never loads, and which would reach the dynamic programs the daemon starts.
+#
+# There is no jail: no mount, pid, ipc or uts namespace. A jail would hide /root and /overlay and
+# the router's process table, and would cost every program started by `exec` ps, kill, reboot,
+# sysupgrade -b, firstboot and mtd; it would not hold a daemon that is root with the whole of ubus
+# (service.set starts any command outside it) and a writable /etc. This is not containment of a
+# broken daemon: root, ubus and the file system remain ways out, and splitting the part that parses
+# input from the part that acts is the next step of G3.14.
+#
+# Fail closed without requirejail: there is nothing to build, so nothing for requirejail to demand.
+# The daemon reads its own /proc/self/status before it listens and refuses to run unless NoNewPrivs,
+# Seccomp, CapBnd and CapEff show what is expected (confine in seccomp_filter.go), so a router where
+# ujail is missing or procd did not apply the capability file does not run it.
 
 USE_PROCD=1
 START=95
@@ -12,6 +38,15 @@ start_service() {
 	procd_set_param respawn
 	procd_set_param stdout 1
 	procd_set_param stderr 1
+	# ujail hands the daemon an environment of one variable; the programs it starts look for
+	# uci, ubus and apk on PATH.
+	procd_set_param env PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	procd_set_param no_new_privs 1
+	procd_set_param capabilities /etc/capabilities/openwrt-mcp.json
+	# procd applies the capability file only through ujail. A jail section with no mount and no
+	# namespace flag makes procd start the daemon as `ujail -C <file> -c -- ...`, which drops
+	# capabilities and builds no jail (measured: same mnt, pid and uts namespaces as init).
+	procd_add_jail openwrt-mcp
 	procd_close_instance
 }
 

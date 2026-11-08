@@ -9,4 +9,5 @@
 # losing the token store would silently unpair every client.
 /usr/bin/openwrt-mcp
 /etc/init.d/openwrt-mcp
+/etc/capabilities/openwrt-mcp.json
 /etc/openwrt-mcp

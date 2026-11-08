@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+**The daemon runs with `no_new_privs`, a capability set of nine and its own seccomp filter, and does
+not listen unless the kernel shows all three.** The first step of the estate's gap G3.14. It narrows
+the kernel surface; it builds no jail and does not contain a broken daemon, which is root with the
+whole of ubus and a writable `/etc`. `@decided 2026-11-08`: a light cage now, the split of the part
+that parses input from the part that acts in a separate change after it.
+[docs/security.md](docs/security.md#the-daemons-kernel-surface-is-narrowed) says what is narrowed and
+what is not.
+
+### Added
+
+- `/etc/capabilities/openwrt-mcp.json`, installed by the .apk, the .ipk and `make install`, and
+  carried across a firmware upgrade by `keep.d`.
+- `openwrt-mcp serve` installs a seccomp filter (`seccomp/denied.txt`, the x32 numbers killed too)
+  before it reads anything, and refuses to listen unless `/proc/self/status` shows `NoNewPrivs`,
+  `Seccomp` and exactly the expected `CapBnd` and `CapEff`.
+- `scripts/gate-jail.sh` with its teeth in `scripts/gate-jail-teeth.sh`,
+  `features/service-narrowing.feature`, and `scripts/e2e-vlab.sh`, which runs every tool against the
+  daemon on a virtual router.
+
+### Changed
+
+- The init script starts the daemon through ujail with the capability file, `no_new_privs` and no
+  mount or namespace, so a program started by `exec` sees the router as before.
+
 ## v0.5.0-taipanbox.8 (binary version 0.5.0.8)
 
 **Guessing the second factor costs time that grows, and a restart forgives none of it.**

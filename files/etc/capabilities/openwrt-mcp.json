@@ -1,0 +1,37 @@
+{
+	"bounding": [
+		"CAP_CHOWN",
+		"CAP_DAC_OVERRIDE",
+		"CAP_FOWNER",
+		"CAP_FSETID",
+		"CAP_KILL",
+		"CAP_SETGID",
+		"CAP_SETUID",
+		"CAP_NET_ADMIN",
+		"CAP_NET_RAW"
+	],
+	"effective": [
+		"CAP_CHOWN",
+		"CAP_DAC_OVERRIDE",
+		"CAP_FOWNER",
+		"CAP_FSETID",
+		"CAP_KILL",
+		"CAP_SETGID",
+		"CAP_SETUID",
+		"CAP_NET_ADMIN",
+		"CAP_NET_RAW"
+	],
+	"permitted": [
+		"CAP_CHOWN",
+		"CAP_DAC_OVERRIDE",
+		"CAP_FOWNER",
+		"CAP_FSETID",
+		"CAP_KILL",
+		"CAP_SETGID",
+		"CAP_SETUID",
+		"CAP_NET_ADMIN",
+		"CAP_NET_RAW"
+	],
+	"inheritable": [],
+	"ambient": []
+}
