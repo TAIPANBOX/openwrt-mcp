@@ -1,13 +1,20 @@
 # The owner's approval path, past the listener
 
-A design for a choice that is still open. It writes no code: it sets out the ways the owner's card
-and the owner's answer can reach the helper without passing through the listener, what each costs
-the owner, what each changes here and in hermes-openwrt, and what each leaves. The last sections
-put them side by side and name one.
+The ways the owner's card and the owner's answer can reach the helper without passing through the
+listener, what each costs the owner, what each changes here and in hermes-openwrt, and what each
+leaves; then the options side by side, the one chosen, and what was settled while it was built.
 
 `@decided 2026-11-08`: the card a held change is approved by, and the owner's answer to it (the tap,
 the PIN and the code), reach the helper by a path the listener does not see, and the owner types
 nothing more than today.
+
+`@decided 2026-11-08`: A, carried as A2. The root helper sends the card of a held change and reads the
+owner's answer itself, through a bot of the router's own; TLS ends in the helper and the listener only
+carries encrypted bytes, so invariant 12 stays as written; the Hermes gateway and the listener leave
+the approval path; the owner approves as before, one tap and one message with the PIN and the code, in
+the router's own chat; once per router the owner makes a bot with BotFather, pastes its token in LuCI
+and presses Start. This deliberately replaces the earlier choice of the same bot for the cards.
+[What was settled while building it](#what-was-settled-while-building-it) has the details.
 
 - [What passes through the listener today](#what-passes-through-the-listener-today)
 - [What a broken listener can do with it](#what-a-broken-listener-can-do-with-it)
@@ -20,6 +27,7 @@ nothing more than today.
 - [Side by side](#side-by-side)
 - [Recommendation](#recommendation)
 - [The test every option has to pass](#the-test-every-option-has-to-pass)
+- [What was settled while building it](#what-was-settled-while-building-it)
 
 ## What passes through the listener today
 
@@ -369,3 +377,43 @@ and code as an approval. Against today's code it approves the change the owner w
 is the red run. With A, B, D or E it sees no frame of the owner's at all, so it has nothing to rewrite,
 which is the green one. It goes into `features/` as a scenario bound to its test, with a mutant that
 routes the owner's factor back through the listener and must turn it red.
+
+## What was settled while building it
+
+- **The pipe.** The listener serves `/var/run/openwrt-mcp-relay/telegram.sock`, in a directory
+  `openwrt-mcp:openwrt-mcp 0700` that the init script makes, and serves only a peer whose
+  `SO_PEERCRED` uid is 0. For each connection it dials `api.telegram.org:443` itself, a name fixed in
+  its code, and copies bytes both ways, at most four connections at once, each cut after two minutes
+  without a byte. The helper connects to that socket, checks that the other end is the listener's
+  uid, and runs TLS for `api.telegram.org` over it against the system's roots, TLS 1.2 at least, with
+  no proxy. The other way was a descriptor passed over the socket (`SCM_RIGHTS`): it would put a TCP
+  socket in the helper's hands, so invariant 12 would hold only by agreement, and the helper would
+  have to check what kind of socket it had been given. The copy costs the listener a few kilobytes a
+  minute.
+- **When the bot is the channel.** Once a token is set and a chat is bound. From then on, for every
+  approval section on the router, the MCP approver tools are refused (`action_list`,
+  `action_approve`, `action_reject`, and `mfa_unlock` and `mfa_lock` naming another client), and at
+  the moment of binding the helper revokes the tokens of the clients named as approvers. Until a chat
+  is bound, approvals work as before, so setting the bot up never leaves a gap.
+- **Binding the chat.** `openwrt-mcp owner-bot bind` makes a one-time code of 128 bits and prints it
+  with the link `https://t.me/<bot>?start=<code>`. LuCI shows that link, so pressing Start sends the
+  code and the owner types nothing. The helper takes the code for 30 minutes of its own monotonic
+  clock from when it first sees it, binds the private chat that sends it, and removes it. Until then
+  the bot answers nobody, and a wrong code, a group or a channel gets no answer at all.
+- **Files.** `/etc/openwrt-mcp/owner-bot/`, root's, `0700`, each file `0600` with one writer: `token`
+  (the CLI, from standard input), `bind` (the CLI writes the code's SHA-256, the helper removes it),
+  `chat` (the helper writes the bound id), `seen` (the helper writes the bot's name and its last
+  error, for `status`).
+- **In the chat.** The card is the record's card, plain text, with Approve and Reject. Approve
+  restates the headline from the record and opens a prompt of 180 seconds; the next text from the
+  owner is deleted, then read as `PIN code` (or `code`, for a section whose factor is `totp`), and
+  approved by the same checks in the same order as `action_approve`, the factor last and the step
+  spent. A message that looks like a factor with no prompt open, or after it closed, is deleted and
+  counts nothing. `/unlock PIN code` and `/lock` work as they did in the agent's chat; with more than
+  one approval section they name the client first. The outcome edits the card, and so does an
+  expiry, a withdrawal or a `/lock`.
+- **A restart.** Held changes and prompts live in memory, so a restart drops them, as before. What
+  reached the bot while the helper was not reading is read once at its start and never acted on: a
+  message that looks like a factor is deleted, and the owner is told it was not used.
+- **Without a bot.** A router with no bot bound keeps today's path, and the gap this page opens with
+  stays for it: the listener carries the card and the factor.
