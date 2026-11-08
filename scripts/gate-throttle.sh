@@ -24,7 +24,7 @@ rc=0
 fail() { echo "FAIL $1: $2"; rc=1; }
 pass() { echo "PASS $1"; }
 
-for f in throttle.go mfa.go tools.go server.go approval.go mfa_cli.go; do
+for f in throttle.go mfa.go tools.go server.go approval.go mfa_cli.go helper.go frontend.go; do
 	[ -f "$REPO/$f" ] || { echo "FAIL: measured nothing: $f is gone"; exit 1; }
 done
 
@@ -112,13 +112,13 @@ check_reset_is_cli_only() {
 		return
 	fi
 	# A tool's body, and what a request reaches, stay away from every path that clears a count.
-	for f in tools.go approval.go server.go; do
+	for f in tools.go approval.go server.go helper.go frontend.go; do
 		if code "$f" | grep -qE 'clearThrottleLocked|forgetLocked|\.Forget\(|\.ResetThrottle\(|writeThrottle|saveThrottleLocked|runMFAReset'; then
 			fail check_reset_is_cli_only "$f reaches a path that clears a count"
 			return
 		fi
 	done
-	if code tools.go | grep -qiE 'addTool[A-Za-z]*\(.*"[a-z_]*reset[a-z_]*"|^[[:space:]]*"[a-z_]*reset[a-z_]*",$'; then
+	if code tools.go | grep -qiE '(addTool[A-Za-z]*|toolOf)\(.*"[a-z_]*reset[a-z_]*"|^[[:space:]]*"[a-z_]*reset[a-z_]*",$'; then
 		fail check_reset_is_cli_only "tools.go registers a tool named for a reset"
 		return
 	fi
@@ -126,22 +126,24 @@ check_reset_is_cli_only() {
 }
 
 check_bad_token_is_folded() {
-	b=$(body server.go 'func (s *Server) authenticate(')
+	b=$(body server.go 'func (s *Server) badToken(')
 	if [ -z "$b" ] || ! printf '%s\n' "$b" | grep -q 'bearer token'; then
-		fail check_bad_token_is_folded "measured nothing: authenticate() records no bad token"
+		fail check_bad_token_is_folded "measured nothing: badToken() records no bad token"
 	elif printf '%s\n' "$b" | grep -q 's\.audit\.Record('; then
-		fail check_bad_token_is_folded "authenticate() writes a line for each bad token"
+		fail check_bad_token_is_folded "badToken() writes a line for each bad token"
 	elif ! printf '%s\n' "$b" | grep -q 's\.audit\.Fold('; then
-		fail check_bad_token_is_folded "authenticate() folds nothing"
+		fail check_bad_token_is_folded "badToken() folds nothing"
+	elif ! body server.go 'func (s *Server) auth(' | grep -q 's\.badToken(' || ! body server.go 'func (s *Server) call(' | grep -q 's\.badToken('; then
+		fail check_bad_token_is_folded "a bad token reaching the helper's auth or call is not written by badToken()"
 	else
 		pass check_bad_token_is_folded
 	fi
 }
 
 check_refusals_are_folded() {
-	b=$(body tools.go 'func addToolShaped[')
+	b=$(body tools.go 'func (s *Server) gate(')
 	if [ -z "$b" ]; then
-		fail check_refusals_are_folded "measured nothing: addToolShaped is gone"
+		fail check_refusals_are_folded "measured nothing: the gate is gone"
 	elif ! printf '%s\n' "$b" | grep -q 'fold = foldOf(err)' || ! printf '%s\n' "$b" | grep -q 's\.audit\.Fold('; then
 		fail check_refusals_are_folded "the tool wrapper does not fold what a refusal asks to have folded"
 	elif ! code mfa.go | grep -q 'func (e \*lockedOutError) foldNote()'; then

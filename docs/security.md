@@ -13,12 +13,14 @@ is adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 - [High-impact changes wait for the owner's approval](#high-impact-changes-wait-for-the-owners-approval)
 - [Secrets: the audit log and `uci_get`](#the-audit-log-never-holds-a-secrets-value)
 - [What a client can check for](#what-a-client-can-check-for)
+- [The part that meets the network holds no root](#the-part-that-meets-the-network-holds-no-root)
 - [How it behaves at its edges](#how-it-behaves-at-its-edges)
 
 ## The model at a glance
 
 | | |
 |---|---|
+| **Privilege split** | Two processes. The listener parses HTTP and MCP as its own account, with no capability, no ubus and no program it may start; the helper holds root, makes every decision and takes every action, and does not listen on the network. See [privilege-split.md](privilege-split.md). |
 | **Reachability** | Loopback only, enforced in code: startup fails on a routable address. SSH key auth is the outer lock, the bearer token the inner one. A request whose `Origin` is not loopback is refused with 403, so a page in a local browser cannot drive the router. |
 | **No loopback auto-trust** | Any process on the router can reach `127.0.0.1`, and `ssh -R` can make remote traffic arrive there. Reachability is never treated as identity; origin is recorded for attribution only. A missing or wrong token is answered 401 and audited. |
 | **Tokens** | 256-bit, base64url, shown once. Only the SHA-256 digest is stored (mode 0600), compared in constant time. The client's identity comes from the token when it connects, never from a tool argument or a self-asserted name. `unpair` takes effect without a restart. |
@@ -448,6 +450,7 @@ openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities'
 | `apk_add_official_feed_only` | 0.5.0.4 | `apk_add` installs from the official feeds only |
 | `actions_held_for_approval` | 0.5.0.5 | high-impact changes wait for the owner's approval |
 | `second_factor_throttle_persisted` | 0.5.0.8 | the guess throttle outlives a restart and a reboot, and the disk holds no time |
+| `listener_holds_no_root` | next release | the part that parses HTTP and MCP runs as its own account with no capability, and refuses to run as root |
 
 The same report gives each client's `mfa` object (`factor`, `totp_enrolled`, `totp_pending`,
 `pin_set`, `failures`, and `live_state`) and, for a client with an approval section, its `approval`
@@ -464,46 +467,78 @@ and `persisted`. Tries reach that list only through the owner's token or from a 
 approval section, since the agent's own token spends none, which makes it what a plugin needs to
 tell the owner that someone else is trying. The agent's own view carries none of it.
 
+## The part that meets the network holds no root
+
+`@decided 2026-11-08`: a light cage first, then straight after it a split of privileges, in which the
+part that listens and parses input holds no root and a narrow root helper runs a typed set of actions
+and checks the owner's approval itself. Both are in place.
+[privilege-split.md](privilege-split.md) has the boundary, the protocol, each action and what the
+helper checks for it, who owns which file, and what the split does not hold.
+
+The daemon is two processes, both started by procd from one init script:
+
+- **The listener**, `openwrt-mcp serve`, as the account `openwrt-mcp`. It parses HTTP, the Origin and
+  bearer headers, MCP's JSON-RPC and each tool's schema, and forwards each bearer token and each typed
+  call to the helper. It holds no capability (all five lists of
+  `/etc/capabilities/openwrt-mcp-serve.json` are empty), its filter kills `execve` so it starts no
+  program, it has no ubus ACL, and it reads no file of the daemon's state. It refuses to run as root.
+- **The helper**, `openwrt-mcp helper`, as root. It holds the tokens, the policies, the owner's rules,
+  the held changes, the second factor and the throttle, and the audit log, and it runs every tool. It
+  has no IP socket: it serves one Unix socket, `root:openwrt-mcp 0660` in a `0750` directory, and
+  answers only a peer whose kernel-reported uid is the listener's. It takes four kinds of request,
+  `auth`, `call` (a tool of the list, with that tool's own input type), `config` and `health`, each
+  decoded strictly, and it resolves the bearer token itself on every call: no request names a client,
+  a window or an approval.
+
+Measured on OpenWrt 25.12.5 in the vlab, 2026-11-08: the listener at `Uid 32768`, `CapEff`, `CapPrm`
+and `CapBnd 0`, `NoNewPrivs 1`, `Seccomp 2`; the helper at `Uid 0`, `CapEff` and `CapBnd 30fb`,
+`NoNewPrivs 1`, `Seccomp 2`. As the listener, starting `ubus` ends with SIGSYS, writing `/etc/config`
+and reading `/etc/shadow` are refused, and the account's ubus calls (`service set`, `file exec`,
+`uci set`, `system board`) answer "Not found". [measured.md](measured.md) has the run.
+
 ## The daemon's kernel surface is narrowed
 
-`@decided 2026-11-08`: a light cage now, and a split of privileges in a separate change after it.
+`@decided 2026-11-08`: a light cage now, and a split of privileges in a separate change after it. The
+split is the section above; this is the cage, which each part keeps.
 
-The daemon is root, and stays root: it commits `/etc/config` (mode 0600 for `network` and
+The helper is root, and stays root: it commits `/etc/config` (mode 0600 for `network` and
 `wireless`), starts `uci`, `ubus` and `apk` for an agent, and `apk_add` writes anywhere in the root
-file system. The init script takes from it what those jobs never use, and the daemon checks it
-before it listens. `scripts/gate-jail.sh` holds the files to it, and `scripts/e2e-vlab.sh` shows it
+file system. The init script takes from it what those jobs never use, and the helper checks it
+before it serves. `scripts/gate-jail.sh` holds the files to it, and `scripts/e2e-vlab.sh` shows it
 on a running router.
 
 | Narrowed | How |
 |---|---|
-| Capabilities | `/etc/capabilities/openwrt-mcp.json` names nine, in all five lists, so the bounding set holds for every program the daemon starts: `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`, `CAP_FSETID`, `CAP_KILL`, `CAP_SETUID`, `CAP_SETGID`, `CAP_NET_ADMIN`, `CAP_NET_RAW`. Without `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME`, `CAP_MKNOD` and the rest |
-| Privilege from a setuid file | `no_new_privs` |
-| System calls | the daemon's own seccomp filter ([seccomp/denied.txt](../seccomp/denied.txt)): forty calls (`ptrace`, `mount` and the new mount API, `unshare`, `setns`, the module calls, `kexec`, `reboot`, `bpf`, `keyctl`, the clock calls, the file-handle calls) end the caller with SIGSYS; `clone` with a namespace flag does the same, `clone3` answers ENOSYS so libc falls back to `clone`, whose flags the filter can read, and every number with bit 30 set (the x32 ABI's) is killed |
+| Capabilities | the helper: `/etc/capabilities/openwrt-mcp.json` names nine, in all five lists, so the bounding set holds for every program it starts: `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`, `CAP_FSETID`, `CAP_KILL`, `CAP_SETUID`, `CAP_SETGID`, `CAP_NET_ADMIN`, `CAP_NET_RAW`. Without `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME`, `CAP_MKNOD` and the rest. The listener: none |
+| Privilege from a setuid file | `no_new_privs`, for both |
+| System calls | each part's own seccomp filter ([seccomp/denied.txt](../seccomp/denied.txt)): forty calls (`ptrace`, `mount` and the new mount API, `unshare`, `setns`, the module calls, `kexec`, `reboot`, `bpf`, `keyctl`, the clock calls, the file-handle calls) end the caller with SIGSYS; `clone` with a namespace flag does the same, `clone3` answers ENOSYS so libc falls back to `clone`, whose flags the filter can read, and every number with bit 30 set (the x32 ABI's) is killed. The listener's filter kills `execve` and `execveat` as well |
 
-procd applies the capability file only through ujail, so the init script has a bare `procd_add_jail
-openwrt-mcp`: procd then runs `ujail -C <file> -c -- openwrt-mcp serve`, which drops capabilities and
-builds nothing (measured on OpenWrt 25.12.5: the same mount, pid and uts namespaces as init; without
-that line the daemon ran with `CapBnd 000001ffffffffff`). The seccomp filter is the daemon's own and
-not procd's profile, because procd applies a profile through `LD_PRELOAD`, which a static Go binary
-never loads. It is a deny-list, not an allow-list, because the daemon starts `uci`, `ubus`, `apk` and
-whatever a grant names, and every one of them inherits it. It goes on first thing in `serve`, on
-every thread, and is built for amd64 and arm64. CI runs it on a kernel of each
-(`scripts/gate-seccomp-native.sh`, on an amd64 runner and an arm64 one), where every listed call, by
-the number the kernel's own headers give its name, must end the caller with SIGSYS.
+procd applies a capability file only through ujail, so each instance has a bare jail line: procd then
+runs `ujail -C <file> -c -- openwrt-mcp helper`, and `ujail -U openwrt-mcp -G openwrt-mcp -C <file> -c
+-- openwrt-mcp serve` for the listener, which drops capabilities, switches the account and builds
+nothing (measured on OpenWrt 25.12.5: the same mount and pid namespaces as init; without that line the
+daemon ran with `CapBnd 000001ffffffffff`). The seccomp filter is the daemon's own and not procd's
+profile, because procd applies a profile through `LD_PRELOAD`, which a static Go binary never loads.
+It is a deny-list, not an allow-list, because the helper starts `uci`, `ubus`, `apk` and whatever a
+grant names, and every one of them inherits it. It goes on first thing, on every thread, and is built
+for amd64 and arm64. CI runs it on a kernel of each (`scripts/gate-seccomp-native.sh`, on an amd64
+runner and an arm64 one), where every listed call, by the number the kernel's own headers give its
+name, must end the caller with SIGSYS.
 
-**Fail closed.** Before it listens the daemon reads its own `/proc/self/status` and refuses to run
-unless `NoNewPrivs` is 1, `Seccomp` is 2, and `CapBnd` and `CapEff` are exactly the nine. A router
-where ujail is missing, or where procd did not apply the file, does not run the daemon.
+**Fail closed.** Before it serves the helper reads its own `/proc/self/status` and refuses to run
+unless `NoNewPrivs` is 1, `Seccomp` is 2, and `CapBnd` and `CapEff` are exactly the nine. The listener
+refuses to run as root, with any effective, permitted or ambient capability, or, as its own account,
+with a bounding set or without `NoNewPrivs`. A router where ujail is missing, or where procd did not
+apply a file, does not run the daemon.
 
-**What this is not.** It narrows what the kernel will do for the daemon and for every program it
-starts. It does not contain a broken daemon. The daemon is root with the whole of ubus (`ubus call
-service set` starts any command, outside the daemon's own process) and with write access to
-`/etc`, which holds its own init script, so root, ubus and the file system remain ways out. There is
-no jail on purpose: no mount, pid, ipc or uts namespace. A jail would hide `/root`, `/overlay` and
-the router's process table from the daemon and take `ps`, `kill`, `reboot`, `sysupgrade -b`,
-`firstboot` and `mtd` from every program `exec` starts, and it would not hold a daemon with those
-ways out. Closing them is the next step: splitting the part that parses input from the part that
-acts.
+**What this is not.** There is no jail around either part, on purpose: no mount, pid, ipc or uts
+namespace. A jail would hide `/root`, `/overlay` and the router's process table from the helper and
+take `ps`, `kill`, `reboot`, `sysupgrade -b`, `firstboot` and `mtd` from every program `exec` starts.
+The helper is root with the whole of ubus and a writable `/etc`, by its job; what keeps a broken
+listener from them is the split, and what the split does not hold is listed in
+[privilege-split.md](privilege-split.md#what-this-holds-and-what-it-does-not): the listener sees every
+token and factor that passes through it, the helper is trusted and holds the whole gate, and `exec`
+is a root shell under the owner's grant and second factor.
 
 ## How it behaves at its edges
 

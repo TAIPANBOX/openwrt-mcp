@@ -3,6 +3,7 @@
 Every figure here comes from a run: on a router, in OpenWrt's own published images in CI, or in the
 test suite. Newest first, each with its date, the machine and what it showed.
 
+- [The split of privileges](#the-split-of-privileges)
 - [The guess throttle](#the-guess-throttle)
 - [The suite and its gates](#the-suite-and-its-gates)
 - [In CI, on every change](#in-ci-on-every-change)
@@ -11,6 +12,45 @@ test suite. Newest first, each with its date, the machine and what it showed.
 - [Mutation checks](#mutation-checks)
 - [On GL.iNet firmware](#on-glinet-firmware)
 - [The vendor `gl-*` objects on a Flint 4](#the-vendor-objects-on-a-flint-4)
+
+## The split of privileges
+
+Run on 2026-11-08 on a virtual OpenWrt 25.12.5 x86_64 router (vlab on a Debian 13 host, QEMU/KVM),
+with `scripts/e2e-vlab.sh`: the package files installed as `make install` copies them, both parts
+started by procd, and every tool driven through the listener with a bearer token.
+
+| Part | Uid | CapEff | CapBnd | CapPrm | NoNewPrivs | Seccomp | Sockets |
+|---|---|---|---|---|---|---|---|
+| `openwrt-mcp helper` | 0 | `30fb` | `30fb` | `30fb` | 1 | 2 | no IP socket |
+| `openwrt-mcp serve` | 32768 (`openwrt-mcp`) | 0 | 0 | 0 | 1 | 2 | listens on 127.0.0.1:8730 only |
+
+The socket's directory read `drwxr-x--- root:openwrt-mcp`, the socket `srw-rw---- root:openwrt-mcp`;
+both parts are in init's mount and pid namespaces. TestJailVlab ran 22 subtests, all passing: the 15
+that drive every tool (uci with its rollback and confirmation, a held change approved by the owner,
+exec, a service restart, apk_add from the official feed, wg_new_client, state over a restart) and
+7 on the split. As the listener's own identity, with its filter:
+
+| Tried | Answer |
+|---|---|
+| start `ubus call service set` | the process ends with SIGSYS |
+| create `/etc/config/mcpprobe`, append to `/etc/config/system`, to the init script, into `/etc/openwrt-mcp` | permission denied |
+| read `/etc/shadow`, the token digests, the TOTP secrets, the PINs, `/etc/config/network` | permission denied |
+| ask the helper for `op: exec`, for the tool `service_set`, with a `cmd` or a `client` field | refused by the protocol |
+| ask the helper for `exec` with no token | `unauthorized`, and an audit line |
+| as the account without the listener's `execve` rule, `ubus call` `service set`, `system board`, `file exec`, `uci set` | `Not found` for each |
+| connect to the helper as another account (`nobody`), and as root | permission denied; root gets no answer |
+| `openwrt-mcp serve` as root | refuses to start |
+| `/health` with the helper stopped | 503 after 10 s |
+
+The same 22 subtests against origin/main's daemon at `4d4c0ed` (one root process): the 15 that drive
+the tools pass, the 7 on the split fail, each at its own assertion.
+
+In the suite, on the same host with Go 1.27.3: `go test ./... -count=1` green, also with `-race` on
+the split's tests; coverage 90.3% of statements (`frontend.go` all but one branch, `helper.go`'s
+decoder 95.5%; the root-only lines of `serveIDs` and `listenHelper` run on the router, above);
+`FuzzHelperRequest` 769,360 executions in 60 s, no failure; the sweep of 200 seeds, 20,000 mutated
+frames, every one taken well formed; `scripts/gate-split.sh` with 22 planted faults and a comment,
+each caught.
 
 ## The guess throttle
 

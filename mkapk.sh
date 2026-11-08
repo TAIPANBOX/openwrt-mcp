@@ -74,6 +74,7 @@ mkdir -p "$DATA/usr/bin" "$DATA/etc/init.d" "$DATA/etc/capabilities" "$DATA/etc/
 install -m 0755 "$BIN"                               "$DATA/usr/bin/$PKG"
 install -m 0755 "$SRC/files/etc/init.d/$PKG"         "$DATA/etc/init.d/$PKG"
 install -m 0644 "$SRC/files/etc/capabilities/$PKG.json" "$DATA/etc/capabilities/$PKG.json"
+install -m 0644 "$SRC/files/etc/capabilities/$PKG-serve.json" "$DATA/etc/capabilities/$PKG-serve.json"
 install -m 0644 "$SRC/files/etc/config/$PKG"         "$DATA/etc/config/$PKG"
 install -m 0644 "$SRC/files/lib/upgrade/keep.d/$PKG" "$DATA/lib/upgrade/keep.d/$PKG"
 install -m 0644 "$SRC/files/usr/lib/oui-httpd/rpc/$PKG" "$DATA/usr/lib/oui-httpd/rpc/$PKG"

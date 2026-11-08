@@ -34,6 +34,11 @@ jobs:
       # the proof that a wrong table or audit architecture turns it red. The arm64 job does the same
       # on an arm64 kernel.
       - run: ./scripts/gate-seccomp-native.sh && ./scripts/gate-seccomp-native-teeth.sh
+      # The split: the listener as its own account with no capability, the helper with no network
+      # listener and a socket for the listener's uid only, and the proof the gate notices each lost.
+      # The mutants break the split's code and require the test named for each to go red.
+      - run: ./scripts/gate-split.sh && ./scripts/gate-split-teeth.sh
+      - run: python3 scripts/mutate-split.py
 
       # The package is only useful if it builds for the router, so build it here
       # rather than finding out at install time on someone's only router.

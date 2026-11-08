@@ -84,25 +84,42 @@ before the 2026-10-17 security wave, so the numbering starts here.
     (gate: `scripts/gate-apk-parity.sh` `check_upgrade_restarts`, `check_upgrade_keeps_boot_start`;
     teeth: CI's apk job)
 
-11. **The daemon runs with no_new_privs, a named capability set and its own seccomp filter, a
-    program it starts inherits all three, and the daemon does not listen unless the kernel shows
-    them.** The capability file names all five lists and holds no `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`,
+11. **The helper runs with no_new_privs, a named capability set and its own seccomp filter, a
+    program it starts inherits all three, and it does not serve unless the kernel shows them.** The
+    capability file names all five lists and holds no `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`,
     `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME` or `CAP_MKNOD`; procd gets it
-    through a bare `procd_add_jail`, with no mount, no namespace and no `requirejail`; `serve`
-    installs the filter (x32 numbers killed) before it reads the configuration, and refuses to
-    listen unless `/proc/self/status` shows `NoNewPrivs 1`, `Seccomp 2` and `CapBnd` and `CapEff`
-    equal to the file's mask; procd's own seccomp profile is never set, because it filters nothing
-    for a static binary. This narrows the kernel surface and does not contain a broken daemon: it is
-    root with the whole of ubus and a writable `/etc`, which only the second step of G3.14 (the split
-    of parsing from acting) closes. `@decided 2026-11-08`: a light cage now, no jail.
+    through a bare `procd_add_jail`, with no mount, no namespace and no `requirejail`; `helper`
+    installs the filter (x32 numbers killed) before it reads the configuration, and refuses to serve
+    unless `/proc/self/status` shows `NoNewPrivs 1`, `Seccomp 2` and `CapBnd` and `CapEff` equal to the
+    file's mask; procd's own seccomp profile is never set, because it filters nothing for a static
+    binary. This narrows the helper's kernel surface; what keeps a broken parser from root is
+    invariant 12. `@decided 2026-11-08`: a light cage now, no jail.
     (gate: `scripts/gate-jail.sh`, teeth: `scripts/gate-jail-teeth.sh`; on a kernel of each
     architecture: `scripts/gate-seccomp-native.sh`, teeth: `scripts/gate-seccomp-native-teeth.sh`, in CI
     on amd64 and on an arm64 runner; test: `features/service-narrowing.feature`, every scenario bound;
     on a router: `scripts/e2e-vlab.sh`, `TestJailVlab`, needs a vlab)
 
+12. **The part that listens and parses holds no root, and the helper that holds root does not listen
+    and believes nothing it is told.** The listener (`openwrt-mcp serve`) runs as the account
+    `openwrt-mcp` with an empty capability file in all five lists, `no_new_privs`, and a filter that
+    also kills `execve` and `execveat`; it refuses to run as root or holding any capability, has no ubus
+    ACL and reads no file of the daemon's state. The helper (`openwrt-mcp helper`) opens no IP socket;
+    it serves one Unix socket, `root:openwrt-mcp 0660` in a `0750` directory, and only a peer whose
+    `SO_PEERCRED` uid is the listener's; it takes `auth`, `call`, `config` and `health` and nothing
+    else, a `call` only to a tool of `toolSpecs` with that tool's own input type, every frame decoded
+    strictly and within its bounds; it resolves the bearer token itself on every call, so no request
+    names a client, and the policy, the owner's rules, the second factor, the throttle, the held
+    changes and the audit log are all decided and kept in the helper. `@decided 2026-11-08`: the split
+    of privileges straight after the light cage; the reasons the decisions sit in the helper, and what
+    the split does not hold, are in `docs/privilege-split.md`.
+    (gate: `scripts/gate-split.sh`, teeth: `scripts/gate-split-teeth.sh`; test:
+    `features/privilege-split.feature`, every scenario bound; mutants: `scripts/mutate-split.py`, each
+    caught by the test named beside it; on a router: `scripts/e2e-vlab.sh`, `TestJailVlab`, needs a
+    vlab)
+
 Each invariant is restated as scenarios in `features/`: `exec-argument-grants.feature`,
 `ubus-call-grants.feature`, `audit-keeps-secrets-out.feature`, `wireguard-key-off-argv.feature`,
-`second-factor-throttle.feature` and `service-narrowing.feature`.
+`second-factor-throttle.feature`, `service-narrowing.feature` and `privilege-split.feature`.
 Every scenario is bound to a named test, and `scripts/gate-scenarios-bound.sh` checks the binding
 both ways and runs the tests.
 
@@ -122,12 +139,16 @@ GOTOOLCHAIN=local go vet ./... && GOTOOLCHAIN=local go test ./... -count=1
 ./scripts/gate-throttle.sh && ./scripts/gate-throttle-teeth.sh
 ./scripts/gate-jail.sh && ./scripts/gate-jail-teeth.sh
 ./scripts/gate-seccomp-native.sh && ./scripts/gate-seccomp-native-teeth.sh   # Linux, amd64 or arm64, natively
+./scripts/gate-split.sh && ./scripts/gate-split-teeth.sh
 python3 scripts/mutate-held.py
+python3 scripts/mutate-split.py
 ./scripts/test-real-uci.sh   # needs docker
 ```
 
 `scripts/gate-apk-parity.sh` needs docker and runs in CI's `apk` job only. `scripts/e2e-vlab.sh` needs the
-vlab on forge and is run there by hand: it runs every tool against the daemon on a virtual router.
+vlab on forge and is run there by hand: it runs every tool against the daemon on a virtual router, in its
+two parts, and the boundaries of the split; `--daemon DIR` runs the same tests against another tree's
+daemon (origin/main's, for the red run).
 
 ## Rules for a change
 

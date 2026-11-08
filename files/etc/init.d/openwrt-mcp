@@ -1,52 +1,70 @@
 #!/bin/sh /etc/rc.common
-# openwrt-mcp under procd, with a narrowed kernel surface.
+# openwrt-mcp under procd, in two parts (docs/privilege-split.md).
 #
-# The daemon stays root, and the reason is its job, not a habit: it commits /etc/config (mode 0600
-# for network and wireless), starts uci, ubus and apk for an agent, and apk writes anywhere in the
-# root file system. What this script takes from it is what those jobs never use, and no more:
+# helper   `openwrt-mcp helper`, root. It holds every decision (tokens, policies, the owner's rules,
+#          the second factor, held changes, the audit log) and every action (uci, ubus, apk, exec),
+#          and it does not listen on the network: it serves one Unix socket,
+#          /var/run/openwrt-mcp/helper.sock, root:openwrt-mcp 0660 in a 0750 directory, and answers
+#          only a peer whose kernel-reported uid is the listener's.
+# serve    `openwrt-mcp serve`, the listener, as the account openwrt-mcp. It parses HTTP and MCP on
+#          127.0.0.1 and forwards each bearer token and each typed call to the helper. It holds no
+#          capability (all five lists of its file are empty), may start no program (its filter kills
+#          execve), has no ubus ACL, and reads no file of the daemon's state.
 #
-#   - the capabilities: /etc/capabilities/openwrt-mcp.json names nine, in all five sets, so the
-#     bounding set holds for every program the daemon starts. Missing: CAP_SYS_ADMIN,
-#     CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_PTRACE, CAP_SYS_BOOT, CAP_SYS_TIME, CAP_MKNOD,
-#     CAP_SETPCAP, CAP_BPF and the rest.
-#   - no_new_privs, so no program it starts gains anything from a setuid file.
-#   - system calls: `openwrt-mcp serve` installs its own seccomp filter first thing (seccomp/
-#     denied.txt). procd is not asked for a profile: it applies one through LD_PRELOAD, which a
-#     static Go binary never loads, and which would reach the dynamic programs the daemon starts.
+# Both get no_new_privs, and procd applies each capability file only through ujail, so each has a
+# bare jail line: procd then runs `ujail [-U openwrt-mcp -G openwrt-mcp] -C <file> -c -- ...`, which
+# drops capabilities, switches the account and builds no jail (measured on OpenWrt 25.12.5: the same
+# mount and pid namespaces as init; the listener showed Uid 32768, CapBnd, CapEff and CapPrm 0).
+# Each part installs its own seccomp filter (seccomp/denied.txt) first thing, and refuses to run
+# unless /proc/self/status shows what is expected (seccomp_filter.go), so a router where ujail is
+# missing or procd did not apply a file does not run it.
 #
-# There is no jail: no mount, pid, ipc or uts namespace. A jail would hide /root and /overlay and
-# the router's process table, and would cost every program started by `exec` ps, kill, reboot,
-# sysupgrade -b, firstboot and mtd; it would not hold a daemon that is root with the whole of ubus
-# (service.set starts any command outside it) and a writable /etc. This is not containment of a
-# broken daemon: root, ubus and the file system remain ways out, and splitting the part that parses
-# input from the part that acts is the next step of G3.14.
-#
-# Fail closed without requirejail: there is nothing to build, so nothing for requirejail to demand.
-# The daemon reads its own /proc/self/status before it listens and refuses to run unless NoNewPrivs,
-# Seccomp, CapBnd and CapEff show what is expected (confine in seccomp_filter.go), so a router where
-# ujail is missing or procd did not apply the capability file does not run it.
+# The helper keeps the nine capabilities of /etc/capabilities/openwrt-mcp.json and no jail: it commits
+# /etc/config, starts uci, ubus and apk, and runs exec, which is a root shell under the owner's grant
+# and second factor by design; a jail would take the router's view from every program exec starts.
 
 USE_PROCD=1
 START=95
 STOP=10
 
 PROG=/usr/bin/openwrt-mcp
+ACCOUNT=openwrt-mcp
+
+# The listener's account: made once, kept by sysupgrade with /etc/passwd and /etc/group, made again
+# here if it is missing. It has no password, no shell and no home of its own.
+ensure_account() {
+	user_exists "$ACCOUNT" && group_exists "$ACCOUNT" && return 0
+	local gid
+	gid=$(group_add_next "$ACCOUNT") || return 1
+	user_exists "$ACCOUNT" || user_add "$ACCOUNT" "" "$gid" "$ACCOUNT" /var/run/openwrt-mcp /bin/false
+}
 
 start_service() {
-	procd_open_instance
+	ensure_account || { echo "openwrt-mcp: cannot make the account $ACCOUNT" >&2; return 1; }
+
+	procd_open_instance helper
+	procd_set_param command "$PROG" helper
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	# ujail hands the process an environment of one variable; the programs the helper starts look
+	# for uci, ubus and apk on PATH.
+	procd_set_param env PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	procd_set_param no_new_privs 1
+	procd_set_param capabilities /etc/capabilities/openwrt-mcp.json
+	procd_add_jail openwrt-mcp
+	procd_close_instance
+
+	procd_open_instance serve
 	procd_set_param command "$PROG" serve
 	procd_set_param respawn
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	# ujail hands the daemon an environment of one variable; the programs it starts look for
-	# uci, ubus and apk on PATH.
-	procd_set_param env PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	procd_set_param user "$ACCOUNT"
+	procd_set_param group "$ACCOUNT"
 	procd_set_param no_new_privs 1
-	procd_set_param capabilities /etc/capabilities/openwrt-mcp.json
-	# procd applies the capability file only through ujail. A jail section with no mount and no
-	# namespace flag makes procd start the daemon as `ujail -C <file> -c -- ...`, which drops
-	# capabilities and builds no jail (measured: same mnt, pid and uts namespaces as init).
-	procd_add_jail openwrt-mcp
+	procd_set_param capabilities /etc/capabilities/openwrt-mcp-serve.json
+	procd_add_jail openwrt-mcp-serve
 	procd_close_instance
 }
 

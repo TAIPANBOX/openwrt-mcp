@@ -32,7 +32,15 @@ type sockFprog struct {
 // through LD_PRELOAD=/lib/libpreload-seccomp.so, which a statically linked binary never loads (the
 // two sibling daemons measured Seccomp 0 under it), and which would hand the profile to every
 // dynamic program it starts as well.
-func confineSeccomp() (int, error) {
+func confineSeccomp() (int, error) { return confineSeccompWith(nil) }
+
+// confineSeccompServe is the listener's filter: the same list, and execve and execveat as well, so the
+// part that meets the network starts no program at all, not even ubus or uci.
+func confineSeccompServe() (int, error) {
+	return confineSeccompWith([]uint32{unix.SYS_EXECVE, unix.SYS_EXECVEAT})
+}
+
+func confineSeccompWith(extra []uint32) (int, error) {
 	names, err := DeniedNames()
 	if err != nil {
 		return 0, err
@@ -41,6 +49,7 @@ func confineSeccomp() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	denied = append(denied, extra...)
 	prog, err := buildFilter(auditArch, unix.SYS_CLONE, unix.SYS_CLONE3, denied)
 	if err != nil {
 		return 0, err

@@ -21,10 +21,12 @@ import (
 // A flood of refusals that cost the caller nothing must not rotate the evidence out of audit.jsonl.
 
 func badToken(s *Server, n int) {
-	h := s.Handler()
+	h := newFrontend(s).Handler()
 	for i := 0; i < n; i++ {
 		req := httptest.NewRequest("POST", "/mcp", strings.NewReader("{}"))
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer wrong-%d", i))
+		// Each from a port of its own, as a loop of new connections would be: the caller chooses it.
+		req.RemoteAddr = fmt.Sprintf("127.0.0.1:%d", 20000+i)
 		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
 }
@@ -540,7 +542,7 @@ func TestStatusShowsThrottlePersistedFalseFromTheDaemon(t *testing.T) {
 	ln.Close()
 	s, dir := newToolRigListening(t, addr, policyBlock("a", "pin"))
 	s.mfa.pins.Set("a", "4821")
-	go s.Serve()
+	go newFrontend(s).Serve(s.cfg().Listen)
 	cfg := filepath.Join(dir, "config")
 	for i := 0; i < 100 && !daemonRunning(addr); i++ {
 		time.Sleep(20 * time.Millisecond)
@@ -567,7 +569,7 @@ func TestStatusShowsThrottlePersistedFalseFromTheDaemon(t *testing.T) {
 
 func TestHealthSaysNothingWhileTheThrottleIsSaved(t *testing.T) {
 	s, _ := newToolRig(t, policyBlock("a", "pin"))
-	ts := httptest.NewServer(s.Handler())
+	ts := httptest.NewServer(newFrontend(s).Handler())
 	defer ts.Close()
 	get := func() string {
 		resp, err := http.Get(ts.URL + "/health")
@@ -637,11 +639,18 @@ func TestATermWritesTheSummaryOfAnOpenRun(t *testing.T) {
 	cfg := filepath.Join(dir, "config")
 	writeFile(t, cfg, "config server\n\toption listen '"+addr+"'\n\toption audit '"+dir+"/audit.jsonl'\n")
 
-	cmd := exec.Command(cliBinary(t), "-config", cfg, "-state", dir, "serve")
+	// The two parts as procd starts them: the helper, which holds the audit log, and the listener.
+	sock := shortSocketPath(t)
+	cmd := exec.Command(cliBinary(t), "-config", cfg, "-state", dir, "-socket", sock, "helper")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer cmd.Process.Kill()
+	listener := exec.Command(cliBinary(t), "-config", cfg, "-state", dir, "-socket", sock, "serve")
+	if err := listener.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Process.Kill()
 	for i := 0; i < 200 && !daemonRunning(addr); i++ {
 		time.Sleep(20 * time.Millisecond)
 	}

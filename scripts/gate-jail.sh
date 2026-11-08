@@ -1,13 +1,13 @@
 #!/bin/sh
 # gate-jail.sh -- CI gate enforcing this invariant:
 #
-#   "The daemon runs with no_new_privs, a named capability set that leaves out everything its jobs
-#   do not use, and its own seccomp filter, and does not listen unless the kernel shows all three."
+#   "The helper runs with no_new_privs, a named capability set that leaves out everything its jobs
+#   do not use, and its own seccomp filter, and does not serve unless the kernel shows all three."
 #
-# This narrows the kernel surface; it is not a jail and not containment of a broken daemon, which is
-# root with the whole of ubus and a writable /etc. The init script says so, and the gate holds it to
-# it: no mount and no namespace is asked of ujail, because those would cost every program started by
-# `exec` its view of the router (ps, kill, reboot, sysupgrade -b) for almost nothing in return.
+# This narrows the helper's kernel surface; it is not a jail. The listener's side of the split, its
+# own account and no capability at all, is scripts/gate-split.sh. No mount and no namespace is asked
+# of ujail, because those would cost every program started by `exec` its view of the router (ps,
+# kill, reboot, sysupgrade -b) for almost nothing in return.
 #
 # What it reads is the source of what ships: the init script, the capability file, main.go, the
 # seccomp list and the packaging. It does not start a router; scripts/e2e-vlab.sh does, and shows
@@ -112,9 +112,12 @@ check_seccomp_is_in_the_daemon() {
 	if live | grep -qE 'procd_set_param[[:space:]]+seccomp'; then
 		fail check_seccomp_is_in_the_daemon "the init script sets a procd seccomp profile, which a static binary never loads"; return 1
 	fi
-	# serve installs the filter before it reads the configuration, a token or a policy.
-	awk '/case "serve":/ {s=1; next} s && /confine\(\)/ {c=NR} s && /NewServer\(/ {n=NR} s && /case "pair":/ {exit} END {exit !(c && n && c < n)}' "$ROOT/main.go" ||
-		fail check_seccomp_is_in_the_daemon "serve does not call confine() before NewServer" || return 1
+	# The helper installs the filter before it reads the configuration, a token or a policy, and the
+	# listener installs its own before it asks the helper for anything or listens.
+	awk '/case "helper":/ {s=1; next} s && /confine\(\)/ {c=NR} s && /NewServer\(/ {n=NR} s && /case "pair":/ {exit} END {exit !(c && n && c < n)}' "$ROOT/main.go" ||
+		fail check_seccomp_is_in_the_daemon "helper does not call confine() before NewServer" || return 1
+	awk '/case "serve":/ {s=1; next} s && /confineServe\(\)/ {c=NR} s && /helperClient\{/ {n=NR} s && /case "helper":/ {exit} END {exit !(c && n && c < n)}' "$ROOT/main.go" ||
+		fail check_seccomp_is_in_the_daemon "serve does not call confineServe() before it reaches the helper" || return 1
 	for name in ptrace mount unshare setns init_module finit_module bpf reboot kexec_load pivot_root; do
 		grep -qx "$name" "$ROOT/seccomp/denied.txt" ||
 			{ fail check_seccomp_is_in_the_daemon "$name is not on seccomp/denied.txt"; return 1; }

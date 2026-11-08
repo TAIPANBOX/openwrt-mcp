@@ -2,10 +2,47 @@
 
 ## Unreleased
 
+**The part of the daemon that meets the network holds no root.** The second step of the estate's gap
+G3.14. The daemon is two processes: the listener (`openwrt-mcp serve`) parses HTTP and MCP as its own
+account, `openwrt-mcp`, with no capability, no ubus and no program it may start, and refuses to run as
+root; the helper (`openwrt-mcp helper`) holds root, makes every decision (tokens, policies, the
+owner's rules, the second factor, held changes, the audit log) and runs every tool, and does not
+listen on the network. They speak over a Unix socket only the listener's account can reach, in four
+typed requests the helper decodes strictly, and the helper resolves the bearer token itself on every
+call. `@decided 2026-11-08`: the split straight after the light cage below.
+[docs/privilege-split.md](docs/privilege-split.md) has the boundary, the protocol, what the helper
+checks for each tool, and what the split does not hold: the listener sees the tokens and factors that
+pass through it, the helper is trusted and holds the whole gate, and `exec` is a root shell under the
+owner's grant and second factor, as before.
+
+### Added
+
+- `openwrt-mcp helper`, the root part, and `/etc/capabilities/openwrt-mcp-serve.json`, the listener's
+  capability file with all five lists empty, installed by the .apk, the .ipk and `make install`, and
+  carried across a firmware upgrade by `keep.d`.
+- The account `openwrt-mcp`, made by the init script when it is missing.
+- `listener_holds_no_root` in `status --json`'s capabilities.
+- `scripts/gate-split.sh` with its teeth, `scripts/mutate-split.py`, `features/privilege-split.feature`,
+  and the split's subtests in `scripts/e2e-vlab.sh`, which also takes `--daemon DIR` to run the same
+  tests against another tree's daemon.
+
+### Changed
+
+- `openwrt-mcp serve` is the listener: it reads no file of the daemon's, asks the helper for its listen
+  address, and refuses to run as root. The init script starts two procd instances, `helper` and
+  `serve`.
+- The listener's seccomp filter kills `execve` and `execveat` as well as the daemon's list.
+- A call carries the bearer token of the request it arrived in, and the helper resolves it again, so
+  a token revoked with `unpair` stops at its next call.
+- `/health` answers 503 when the helper does not answer, since the listener alone runs nothing.
+- An answer that does not arrive is never told as nothing run: an error's text is cut like an answer's,
+  an answer too large to send becomes a short one saying the call ran, and a call whose answer was lost
+  after it was sent is reported to the agent as of unknown outcome, with a line in the audit log.
+
 **The daemon runs with `no_new_privs`, a capability set of nine and its own seccomp filter, and does
-not listen unless the kernel shows all three.** The first step of the estate's gap G3.14. It narrows
-the kernel surface; it builds no jail and does not contain a broken daemon, which is root with the
-whole of ubus and a writable `/etc`. `@decided 2026-11-08`: a light cage now, the split of the part
+not listen unless the kernel shows all three.** Since the split above, this is the helper's. The
+first step of the estate's gap G3.14. It narrows the kernel surface; it builds no jail and does not
+contain a broken daemon, which is root with the whole of ubus and a writable `/etc`. `@decided 2026-11-08`: a light cage now, the split of the part
 that parses input from the part that acts in a separate change after it.
 [docs/security.md](docs/security.md#the-daemons-kernel-surface-is-narrowed) says what is narrowed and
 what is not.
