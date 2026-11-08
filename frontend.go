@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -117,6 +118,13 @@ func (f *frontend) getServer(r *http.Request) *mcp.Server {
 			tok = bearerOf(req.Extra.Header)
 		}
 		text, isErr, err := f.b.call(ctx, tok, tool, input)
+		if errors.Is(err, errOutcomeUnknown) {
+			// The helper took the call and its answer was lost: it may have run. The helper's audit
+			// log has the call's own line, and a line that its answer did not arrive.
+			log.Printf("openwrt-mcp: %s: %v", tool, err)
+			return "the result is unknown: the helper took the call and its answer did not arrive, so it may have " +
+				"run; check the router's state before you call it again (" + err.Error() + ")", true
+		}
 		if err != nil {
 			return "the helper did not answer, so nothing was run: " + err.Error(), true
 		}

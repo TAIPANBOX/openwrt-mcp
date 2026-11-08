@@ -74,6 +74,13 @@ Feature: the part that meets the network holds no root
     Then the helper's gate grants or refuses it per client and writes the audit log, exec and held changes included
     And the listener with no helper answers that nothing was run
 
+  # bound to: TestAnErrorsTextIsBoundedLikeAnAnswer, TestAnAnswerTooLargeToSendSaysTheCallRan, TestAnAnswerLostAfterTheCallWasSentIsAnUnknownOutcome, TestAHelperThatIsNotThereRanNothing, TestAnAnswerThatDidNotReachTheListenerIsAudited
+  Scenario: an answer that does not arrive is never told as nothing run
+    When a call's answer is too large, or the connection breaks after the call was sent
+    Then an error's text is cut like an answer's, a too large answer becomes a short one saying the call ran
+    And the agent is told the result is unknown and to check the router before trying again, and the audit log says the answer was lost
+    And only a helper that never took the call is reported as having run nothing
+
   # bound to: TestCLIStatusJSONSaysTheListenerHoldsNoRoot
   Scenario: a caller can ask whether the listener holds no root
     When a package reads openwrt-mcp status --json

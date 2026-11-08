@@ -35,6 +35,9 @@ owner's grant and second factor, as before.
 - A call carries the bearer token of the request it arrived in, and the helper resolves it again, so
   a token revoked with `unpair` stops at its next call.
 - `/health` answers 503 when the helper does not answer, since the listener alone runs nothing.
+- An answer that does not arrive is never told as nothing run: an error's text is cut like an answer's,
+  an answer too large to send becomes a short one saying the call ran, and a call whose answer was lost
+  after it was sent is reported to the agent as of unknown outcome, with a line in the audit log.
 
 **The daemon runs with `no_new_privs`, a capability set of nine and its own seccomp filter, and does
 not listen unless the kernel shows all three.** Since the split above, this is the helper's. The

@@ -638,3 +638,170 @@ func TestCLIStatusJSONSaysTheListenerHoldsNoRoot(t *testing.T) {
 		t.Errorf("capabilities = %v; a caller cannot tell that the listener holds no root", rep["capabilities"])
 	}
 }
+
+// ---------------------------------------------------------------- an answer that does not arrive
+
+// An error's text is bounded like an answer's: a program that fails with a flood of output still
+// gets an answer back through the socket, and it says it was cut.
+func TestAnErrorsTextIsBoundedLikeAnAnswer(t *testing.T) {
+	fakeCmd(t, "id", `head -c 5000000 /dev/zero | tr '\0' x >&2; exit 1`)
+	s, _ := newToolRig(t, splitPolicies)
+	admin, _ := s.tokens.Mint("admin")
+	path := startHelper(t, s, os.Getuid())
+	resp, err := rawExchange(t, path, []byte(fmt.Sprintf(`{"v":1,"op":"call","token":%q,"tool":"exec","input":{"argv":["id"]}}`, admin)))
+	if err != nil {
+		t.Fatalf("a failed call with a large output got no answer: %v", err)
+	}
+	if !resp.OK || !resp.IsError || !strings.Contains(resp.Text, "TRUNCATED") || len(resp.Text) > maxResultBytes+400 {
+		t.Errorf("the error came back %d bytes long, truncated=%v", len(resp.Text), strings.Contains(resp.Text, "TRUNCATED"))
+	}
+}
+
+// An answer that cannot be sent whole is replaced by a short one that says the call ran.
+func TestAnAnswerTooLargeToSendSaysTheCallRan(t *testing.T) {
+	s, _ := newToolRig(t, splitPolicies)
+	a, b := unixPair(t)
+	h := newHelperServer(s, os.Getuid())
+	go h.reply(a, "call", helperResponse{OK: true, Text: strings.Repeat("x", maxResponseFrame+1)})
+	b.SetDeadline(time.Now().Add(10 * time.Second))
+	rb, err := readFrame(b, maxResponseFrame)
+	if err != nil {
+		t.Fatalf("no answer at all: %v", err)
+	}
+	var resp helperResponse
+	json.Unmarshal(rb, &resp)
+	if !resp.OK || !resp.IsError || !strings.Contains(resp.Text, "ran") || !strings.Contains(resp.Text, "check the router") {
+		t.Errorf("the short answer: %+v", resp)
+	}
+}
+
+func unixPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
+	t.Helper()
+	path := shortSocketPath(t)
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan *net.UnixConn, 1)
+	go func() {
+		c, _ := ln.AcceptUnix()
+		done <- c
+	}()
+	b, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := <-done
+	t.Cleanup(func() { a.Close(); b.Close() })
+	return a, b
+}
+
+// A helper that took the call and closed without an answer: the listener cannot know whether it ran,
+// and says so, rather than that nothing was run, so the agent checks before it tries again.
+func TestAnAnswerLostAfterTheCallWasSentIsAnUnknownOutcome(t *testing.T) {
+	path := shortSocketPath(t)
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.SetDeadline(time.Now().Add(5 * time.Second))
+			b, _ := readFrame(c, maxRequestFrame)
+			if r, _ := decodeHelperRequest(b); r.Op == "auth" {
+				out, _ := json.Marshal(helperResponse{OK: true, Known: true, Client: "admin"})
+				writeFrame(c, out)
+			}
+			c.Close() // a call: read whole, and no answer
+		}
+	}()
+	hc := &helperClient{path: path}
+	_, _, err = hc.call(context.Background(), "tok", "exec", json.RawMessage(`{"argv":["id"]}`))
+	if !errors.Is(err, errOutcomeUnknown) {
+		t.Fatalf("a call sent and not answered: %v, want an unknown outcome", err)
+	}
+	ts := httptest.NewServer(newFrontend(hc).Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tr := &mcp.StreamableClientTransport{Endpoint: ts.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: bearerRT{"tok"}}, DisableStandaloneSSE: true}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil).Connect(ctx, tr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "exec", Arguments: map[string]any{"argv": []string{"id"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := res.Content[0].(*mcp.TextContent).Text
+	if !res.IsError || strings.Contains(text, "nothing was run") || !strings.Contains(text, "unknown") || !strings.Contains(text, "check the router") {
+		t.Errorf("the agent was told: %q", text)
+	}
+}
+
+// A helper that is not there took nothing: that is the one case where nothing was run.
+func TestAHelperThatIsNotThereRanNothing(t *testing.T) {
+	hc := &helperClient{path: shortSocketPath(t)}
+	_, _, err := hc.call(context.Background(), "tok", "exec", json.RawMessage(`{"argv":["id"]}`))
+	if err == nil || errors.Is(err, errOutcomeUnknown) {
+		t.Errorf("no helper: %v, want an error that is not an unknown outcome", err)
+	}
+}
+
+// The helper writes in the audit log that the answer to a call did not reach the listener, beside the
+// call's own line.
+func TestAnAnswerThatDidNotReachTheListenerIsAudited(t *testing.T) {
+	fakeCmd(t, "id", `sleep 1; echo uid=0`)
+	s, dir := newToolRig(t, splitPolicies)
+	admin, _ := s.tokens.Mint("admin")
+	path := startHelper(t, s, os.Getuid())
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := []byte(fmt.Sprintf(`{"v":1,"op":"call","token":%q,"tool":"exec","input":{"argv":["id"]}}`, admin))
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(frame)))
+	c.Write(append(n[:], frame...))
+	c.Close() // gone before the answer
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var lines []string
+		for _, e := range readAuditIfAny(dir) {
+			lines = append(lines, e.Client+":"+e.Tool+":"+string(e.Outcome)+":"+e.Error)
+		}
+		joined := strings.Join(lines, "\n")
+		if strings.Contains(joined, "admin:exec:OK") && strings.Contains(joined, "did not reach the listener") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the audit log does not say the answer was lost:\n%s", joined)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func readAuditIfAny(dir string) []AuditEvent {
+	b, err := os.ReadFile(filepath.Join(dir, "audit.jsonl"))
+	if err != nil {
+		return nil
+	}
+	var out []AuditEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var e AuditEvent
+		if json.Unmarshal([]byte(line), &e) == nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}

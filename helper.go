@@ -67,6 +67,13 @@ type helperResponse struct {
 	Persisted bool   `json:"persisted,omitempty"`
 }
 
+// errOutcomeUnknown is a call that was sent whole and got no answer: the helper may have run it. The
+// listener says so to the agent, and never that nothing was run.
+var errOutcomeUnknown = errors.New("the outcome is unknown")
+
+// answerTooLarge replaces the answer to a call that cannot be sent back whole.
+const answerTooLarge = "the call ran, but its answer was too large to send back; check the router's state before you call it again"
+
 // errNotARequest wraps every reason a frame is refused before it is acted on.
 var errNotARequest = errors.New("not a request the helper takes")
 
@@ -172,23 +179,31 @@ func (h *helperServer) handle(c *net.UnixConn) {
 	case h.slots <- struct{}{}:
 		defer func() { <-h.slots }()
 	default:
-		h.reply(c, helperResponse{Refusal: "busy: too many requests at once"})
+		h.reply(c, "", helperResponse{Refusal: "busy: too many requests at once"})
 		return
 	}
 	_ = c.SetReadDeadline(time.Now().Add(helperReadTimeout))
 	b, err := readFrame(c, maxRequestFrame)
 	if err != nil {
-		h.reply(c, helperResponse{Refusal: err.Error()})
+		h.reply(c, "", helperResponse{Refusal: err.Error()})
 		return
 	}
 	req, err := decodeHelperRequest(b)
 	if err != nil {
-		h.reply(c, helperResponse{Refusal: err.Error()})
+		h.reply(c, "", helperResponse{Refusal: err.Error()})
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), helperCallTimeout)
 	defer cancel()
-	h.reply(c, h.dispatch(ctx, req))
+	if err := h.reply(c, req.Op, h.dispatch(ctx, req)); err != nil && req.Op == "call" {
+		// The call ran and its own line is in the log; this one says the listener never heard how.
+		client, ok := h.s.tokens.Resolve(req.Token)
+		if !ok {
+			client = "<unauthenticated>"
+		}
+		h.s.audit.Record(AuditEvent{Time: nowISO(), Client: client, Tool: req.Tool, Outcome: OutcomeError,
+			Error: "the answer did not reach the listener: " + err.Error() + "; the call itself ran, and its own line says how it ended"})
+	}
 }
 
 func (h *helperServer) dispatch(ctx context.Context, req helperRequest) helperResponse {
@@ -208,13 +223,23 @@ func (h *helperServer) dispatch(ctx context.Context, req helperRequest) helperRe
 	return helperResponse{Refusal: "not an operation"} // unreachable: decodeHelperRequest refused it
 }
 
-func (h *helperServer) reply(c *net.UnixConn, resp helperResponse) {
+// reply sends one answer. An answer that cannot be encoded or is over the frame's bound is replaced by
+// a short one: for a call, that it ran and its answer was too large, so the agent checks the router
+// rather than calling again.
+func (h *helperServer) reply(c *net.UnixConn, op string, resp helperResponse) error {
 	b, err := json.Marshal(resp)
+	if err == nil && len(b) > maxResponseFrame {
+		err = fmt.Errorf("an answer of %d bytes", len(b))
+	}
 	if err != nil {
-		return
+		short := helperResponse{Refusal: "the answer could not be sent: " + err.Error()}
+		if op == "call" {
+			short = helperResponse{OK: true, IsError: true, Text: answerTooLarge}
+		}
+		b, _ = json.Marshal(short)
 	}
 	_ = c.SetWriteDeadline(time.Now().Add(helperReadTimeout))
-	_ = writeFrame(c, b)
+	return writeFrame(c, b)
 }
 
 // listenHelper makes the socket: a directory the listener's group may enter and nobody else, and a
@@ -327,16 +352,18 @@ func (h *helperClient) do(ctx context.Context, req helperRequest) (helperRespons
 		deadline = time.Now().Add(helperCallTimeout + 30*time.Second)
 	}
 	_ = c.SetDeadline(deadline)
+	// The helper acts only on a whole frame, so a frame that was not sent whole was not acted on. Once
+	// it was, a missing or broken answer says nothing about whether the call ran.
 	if err := writeFrame(c, b); err != nil {
 		return helperResponse{}, err
 	}
 	rb, err := readFrame(c, maxResponseFrame)
 	if err != nil {
-		return helperResponse{}, err
+		return helperResponse{}, fmt.Errorf("%w: the request was sent and no answer came (%v)", errOutcomeUnknown, err)
 	}
 	var resp helperResponse
 	if err := strictUnmarshal(rb, &resp); err != nil {
-		return helperResponse{}, err
+		return helperResponse{}, fmt.Errorf("%w: the request was sent and the answer does not read (%v)", errOutcomeUnknown, err)
 	}
 	if !resp.OK {
 		return resp, fmt.Errorf("the helper refused the request: %s", resp.Refusal)

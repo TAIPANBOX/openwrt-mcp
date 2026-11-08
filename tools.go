@@ -97,6 +97,12 @@ func resultText(s string) string {
 	if strings.TrimSpace(s) == "" {
 		s = "(no output)"
 	}
+	return boundText(s)
+}
+
+// boundText cuts s at maxResultBytes and says so. An error's text is bounded the same way as an
+// answer: a program that fails with a flood of output must still get its answer back to the agent.
+func boundText(s string) string {
 	if len(s) > maxResultBytes {
 		// Marked loudly: a silently truncated result reads as a complete one.
 		s = s[:maxResultBytes] + fmt.Sprintf(
@@ -840,7 +846,7 @@ func (s *Server) gate(ctx context.Context, client, name string, in any, shape ca
 			}
 		}
 		if isErr {
-			return text, true
+			return boundText(text), true
 		}
 		return resultText(text), false
 	}

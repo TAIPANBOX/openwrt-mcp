@@ -104,6 +104,14 @@ bound, a field the operation does not take, and an operation or a tool not on th
 | A call | 6 minutes (exec stops at 300 seconds) |
 | Requests at once | 32, then the answer is "busy" |
 
+**An answer that does not arrive is never told as nothing run.** An error's text is cut at 64 KiB
+like an answer's. An answer that still cannot be sent whole is replaced by a short one saying the call
+ran and its answer was too large. If the connection breaks after the listener sent a call whole, the
+call may have run: the listener tells the agent the result is unknown and to check the router before
+it calls again, and the helper writes in the audit log that the answer did not reach the listener,
+beside the call's own line. Only a call the helper never took whole, because it was not there or
+refused it, is reported as having run nothing.
+
 No request names a client, a policy, a window or an approval. The helper finds each of them itself
 from the bearer token and its own state, on every call, so a token revoked with `openwrt-mcp unpair`
 stops at its next call, and a call with no token is refused and audited as a bad token.
@@ -214,7 +222,8 @@ What it does not hold:
   (`FuzzHelperRequest`), through the decoder and a running helper.
 - `scripts/gate-split.sh` and its teeth: the init script, the empty capability file, the account, the
   helper's lack of a listener, the socket's modes and uid check, and the packaging.
-- `scripts/mutate-split.py`: each way of breaking the split, and the test that goes red on it.
+- `scripts/mutate-split.py`: 29 ways of breaking the split, among them an answer lost after a call was
+  sent being told as nothing run, each caught by the test named for it.
 - `features/privilege-split.feature`: the scenarios, each bound to a test.
 - `scripts/e2e-vlab.sh`, `TestJailVlab`: the whole tool set through the listener on a virtual OpenWrt
   router, both parts as procd starts them, what the kernel shows for each, and what the listener
