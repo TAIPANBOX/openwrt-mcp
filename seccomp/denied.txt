@@ -1,0 +1,64 @@
+# System calls the daemon, and every program it starts, may never make once its filter is on.
+# serve installs the filter at start (seccomp_linux.go); the list is read by seccomp_list.go.
+# One name per line, [a-z0-9_] only. A name must exist on every architecture the filter goes on
+# (amd64 and arm64), or it belongs in the arch lists in seccomp_arch_*.go.
+#
+# A deny-list, not an allow-list, and the reason is the daemon's job: it starts uci, ubus, apk and
+# whatever program a grant names, and the filter is inherited by all of them. An allow-list would
+# have to hold every call of apk and of every granted program; this one names what none of them has
+# a use for, and that nothing here makes (scripts/e2e-vlab.sh traces the whole run for them).
+#
+# What these calls give a process that the jail's capability set already took away, and a
+# second lock where the capability is not the only door:
+#   ptrace process_vm_readv process_vm_writev kcmp   reading and steering another process
+#   init_module finit_module delete_module           kernel modules
+#   kexec_load kexec_file_load reboot                replacing or stopping the kernel
+#   bpf perf_event_open userfaultfd                  kernel attack surface a router never needs here
+#   keyctl add_key request_key                       the kernel key store, open to any uid
+#   mount umount2 pivot_root fsopen fsconfig fsmount fspick move_mount open_tree mount_setattr
+#   unshare setns                                    leaving or rebuilding the jail's namespaces
+#                                                    (a user namespace needs no capability to make)
+#   swapon swapoff acct quotactl vhangup             machine-wide switches
+#   settimeofday clock_settime clock_adjtime adjtimex   the clock; ntpd is its own jailed service
+#   open_by_handle_at name_to_handle_at lookup_dcookie  file handles that skip the mount namespace
+# clone with a namespace flag, and clone3, are handled in seccomp_filter.go, not here.
+ptrace
+process_vm_readv
+process_vm_writev
+kcmp
+init_module
+finit_module
+delete_module
+kexec_load
+kexec_file_load
+reboot
+bpf
+perf_event_open
+userfaultfd
+keyctl
+add_key
+request_key
+mount
+umount2
+pivot_root
+fsopen
+fsconfig
+fsmount
+fspick
+move_mount
+open_tree
+mount_setattr
+unshare
+setns
+swapon
+swapoff
+acct
+quotactl
+vhangup
+settimeofday
+clock_settime
+clock_adjtime
+adjtimex
+open_by_handle_at
+name_to_handle_at
+lookup_dcookie
