@@ -121,8 +121,8 @@ MUTANTS = [
     ("the owner's lock rejects nothing", "tools.go", "n := s.rejectAll(in.Client)", "n := 0",
      "TestLockRejectsEveryHeld"),
     ("a high-impact change is held with no way to approve it", "tools.go",
-     "if why := s.approvalReady(a); why != \"\" {\n\t\t\t\t\t\t\tr := ",
-     "if why := \"\"; why != \"\" {\n\t\t\t\t\t\t\tr := ", "TestTier3RefusedUntilApprovalIsSetUp"),
+     "if why := s.approvalReady(a); why != \"\" {\n\t\t\t\t\tr := ",
+     "if why := \"\"; why != \"\" {\n\t\t\t\t\tr := ", "TestTier3RefusedUntilApprovalIsSetUp"),
     ("the gate never classifies", "tools.go", "cl := s.classifyCall(ctx, name, shape, p, a)",
      "cl := classification{}", "TestTier3HeldWithWindowOpen"),
     ("what only a person may do is not asked", "tools.go",
@@ -315,11 +315,11 @@ MUTANTS = [
      "TestResetKeepsTheSpentStep"),
     ("a reset says it worked when the disk refused it", "throttle.go", "\treturn was, m.saveThrottleLocked(mono)\n",
      "\t_ = m.saveThrottleLocked(mono)\n\treturn was, nil\n", "TestResetReportsADiskThatWillNotTakeIt"),
-    ("a tool resets the count", "tools.go", '\taddTool(s, srv, client, "mfa_lock",\n',
-     '\taddTool(s, srv, client, "mfa_reset", "resets the count", func(in mfaLockIn) []string { return nil },\n'
-     '\t\tfunc(ctx context.Context, in mfaLockIn) (string, string, error) {\n'
-     '\t\t\t_, err := s.mfa.ResetThrottle(client)\n\t\t\treturn "done", "mfa_reset", err\n\t\t})\n\n'
-     '\taddTool(s, srv, client, "mfa_lock",\n', "TestNoMCPToolResetsTheThrottle"),
+    ("a tool resets the count", "tools.go", '\ttoolOf("mfa_lock",\n',
+     '\ttoolOf("mfa_reset", "resets the count", scoped(noScope[mfaLockIn]),\n'
+     '\t\tfunc(ctx context.Context, s *Server, client string, in mfaLockIn) (string, string, error) {\n'
+     '\t\t\t_, err := s.mfa.ResetThrottle(client)\n\t\t\treturn "done", "mfa_reset", err\n\t\t}),\n\n'
+     '\ttoolOf("mfa_lock",\n', "TestNoMCPToolResetsTheThrottle"),
     ("mfa_lock clears the count", "mfa.go", "\tuntil, was := m.unlocks[client]\n\tdelete(m.unlocks, client)\n",
      "\tuntil, was := m.unlocks[client]\n\tdelete(m.unlocks, client)\n\tm.clearThrottleLocked(client)\n", "TestNoMCPToolResetsTheThrottle"),
     ("a rotated credential keeps its record", "mfa.go", "\tdelete(m.lastCtr, client)\n\tm.clearThrottleLocked(client)\n",
@@ -374,7 +374,7 @@ MUTANTS = [
     ("a stopped daemon reads as not persisted", "status.go", '\tc, err := net.DialTimeout("tcp", listen, 2*time.Second)\n\tif err != nil {\n\t\treturn false, true\n',
      '\tc, err := net.DialTimeout("tcp", listen, 2*time.Second)\n\tif err != nil {\n\t\treturn false, false\n',
      "TestProbeDaemonReportsNothingForAStoppedDaemon"),
-    ("/health says nothing of a failed write", "server.go", "\t\tif !s.mfa.ThrottlePersisted() {\n", "\t\tif false {\n",
+    ("/health says nothing of a failed write", "frontend.go", "\t\tif !persisted {\n", "\t\tif false {\n",
      "TestHealthSaysNothingWhileTheThrottleIsSaved"),
     ("the capability is gone", "status.go", '"second_factor_throttle_persisted": true,', '"second_factor_throttle_persisted_": true,',
      "TestCLIStatusJSONSaysTheThrottleIsPersisted"),
@@ -391,7 +391,7 @@ MUTANTS = [
      "TestAFloodCannotRotateTheEvidenceOut"),
     ("a bad token is not folded", "server.go", 's.audit.Fold(foldNote{key: "bad-token", what: "bad or missing bearer tokens"}, AuditEvent{',
      "s.audit.Record(AuditEvent{", "TestABadTokenFloodIsOneLineAndASummary"),
-    ("a refusal in a delay is not folded", "tools.go", "\t\t\tfold = foldOf(err)\n", "", "TestRefusalsInADelayAreOneLineAndASummary"),
+    ("a refusal in a delay is not folded", "tools.go", "\tfold = foldOf(err)\n", "", "TestRefusalsInADelayAreOneLineAndASummary"),
     ("an mfa_unlock turned away is not folded", "tools.go", "func (e *unlockRefusal) foldNote() foldNote {", "func (e *unlockRefusal) noted() foldNote {",
      "TestTheAgentTokenSpendsNoTries"),
     ("the agent's token spends the owner's tries", "tools.go", '\tif a := s.cfg().approvalFor(caller); a != nil {\n\t\treturn "", &unlockRefusal{',
@@ -411,7 +411,7 @@ MUTANTS = [
      "TestTheDaemonsMinuteSweepsAndItsStopFlushes"),
     ("the minute forgets the audit", "server.go", "\ts.audit.Sweep()\n\ts.mfa.Sweep()\n", "\ts.mfa.Sweep()\n",
      "TestTheDaemonsMinuteSweepsAndItsStopFlushes"),
-    ("the caller names the run", "server.go", 'foldNote{key: "bad-token",', 'foldNote{key: raw,', "TestAFloodOfDifferentTokensIsOneRun"),
+    ("the caller names the run", "server.go", 'foldNote{key: "bad-token",', 'foldNote{key: remote,', "TestAFloodOfDifferentTokensIsOneRun"),
     ("a flushed run is written again", "audit.go", "\tdelete(a.runs, key)\n\tif r.count == 0 {\n", "\tif r.count == 0 {\n",
      "TestAFlushLeavesNothingOnlyInMemory"),
     ("the folded line is not redacted", "audit.go", "\tif e.Args != nil {\n\t\te.Args = redact(e.Args)\n\t}\n", "", "TestTheFoldHoldsNoSecret"),

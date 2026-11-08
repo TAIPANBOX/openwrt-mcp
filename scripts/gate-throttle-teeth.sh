@@ -79,7 +79,7 @@ plant throttle.go '\tif err := os.Rename(tmp, path); err != nil {\n\t\treturn er
 expect_red "no rename" check_write_is_atomic
 
 fresh
-plant tools.go '\taddTool(s, srv, client, "mfa_lock",\n' '\taddTool(s, srv, client, "mfa_reset", "resets", func(in mfaLockIn) []string { return nil },\n\t\tfunc(ctx context.Context, in mfaLockIn) (string, string, error) {\n\t\t\t_, err := s.mfa.ResetThrottle(client)\n\t\t\treturn "", "", err\n\t\t})\n\n\taddTool(s, srv, client, "mfa_lock",\n'
+plant tools.go '\ttoolOf("mfa_lock",\n' '\ttoolOf("mfa_reset", "resets", scoped(noScope[mfaLockIn]),\n\t\tfunc(ctx context.Context, s *Server, client string, in mfaLockIn) (string, string, error) {\n\t\t\t_, err := s.mfa.ResetThrottle(client)\n\t\t\treturn "", "", err\n\t\t}),\n\n\ttoolOf("mfa_lock",\n'
 expect_red "a tool that resets" check_reset_is_cli_only
 
 fresh
@@ -91,7 +91,7 @@ plant server.go 's.audit.Fold(foldNote{key: "bad-token", what: "bad or missing b
 expect_red "a line for each bad token" check_bad_token_is_folded
 
 fresh
-plant tools.go '\t\t\tfold = foldOf(err)\n' ''
+plant tools.go '\tfold = foldOf(err)\n' ''
 expect_red "the wrapper not folding" check_refusals_are_folded
 
 fresh
