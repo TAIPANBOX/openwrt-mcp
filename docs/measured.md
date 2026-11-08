@@ -121,6 +121,24 @@ The scenarios, by feature file:
 
 ## On routers with vanilla OpenWrt 25.12
 
+**2026-11-08, a GL.iNet Flint 2 (GL-MT6000), OpenWrt 25.12.5, 0.5.0.9 from the signed hermes-openwrt
+feed** with hermes-agent 0.21.5-r23 in the owner profile, upgraded from 0.5.0.8 with `apk upgrade
+hermes-agent openwrt-mcp`, no reboot:
+
+| | `helper` | `serve` |
+|---|---|---|
+| Uid | 0 | 32769, the account the init made |
+| CapEff, CapPrm, CapBnd | `30fb` | all 0, CapAmb 0 too |
+| NoNewPrivs, Seccomp | 1, 2 on all 8 threads | 1, 2 on all 7 threads |
+| Sockets | one, the Unix socket `/var/run/openwrt-mcp/helper.sock` | 127.0.0.1:8730 only |
+
+procd showed the two instances with the capability files and `no_new_privs`; `/health` answered
+`openwrt-mcp 0.5.0.9 ok` and `status` reported `listener_holds_no_root`. The post-upgrade restart put
+both parts on the new binary, the configuration kept as it was. Hermes, restarted, discovered nine
+tools through the listener, and a one-off scheduled job read the hostname with `uci_get`; the audit
+log has that call, client `hermes-main`, OK in 2 ms. No change was made through the daemon. The
+earlier packages stay on the router for a way back.
+
 **2026-10-22, a GL.iNet Flint 2 (GL-MT6000), OpenWrt 25.12.5, openwrt-mcp 0.5.0.5** with
 hermes-openwrt r16 in the owner profile, one Telegram id allowed:
 
