@@ -497,6 +497,7 @@ openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities'
 | `second_factor_throttle_persisted` | 0.5.0.8 | the guess throttle outlives a restart and a reboot, and the disk holds no time |
 | `listener_holds_no_root` | 0.5.0.9 | the part that parses HTTP and MCP runs as its own account with no capability, and refuses to run as root |
 | `owner_approves_past_the_listener` | 0.5.0.10 | once the router's own bot is bound, the owner's card and factor travel between the helper and Telegram over TLS that ends in the helper, and no MCP client approves |
+| `owner_bot_tells_the_router` | 0.5.0.11 | binding the owner's chat, and removing the bot or giving it a new token, send the procd service event `openwrt-mcp.owner_bot`, so the agent's init can restart the agent with no page open |
 
 The same report gives each client's `mfa` object (`factor`, `totp_enrolled`, `totp_pending`,
 `pin_set`, `failures`, and `live_state`) and, for a client with an approval section, its `approval`

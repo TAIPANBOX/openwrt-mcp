@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0-taipanbox.11 (binary version 0.5.0.11)
 
 - The router's own bot takes the factor as the owner types it: the PIN and the code in one message
   or the PIN and then the code in the next, within the same 180 seconds, and the code whole or in the
