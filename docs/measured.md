@@ -26,17 +26,20 @@ lasted. No real bot or token took part.
 
 | Measured | This tree | origin/main (the red run, `--daemon`) |
 |---|---|---|
-| the owner's chat bound by the one-time code | in 1.5 s | (no bot) |
+| the owner's chat bound by the one-time code | in 1.6 s | (no bot) |
 | the card in the owner's chat after the hold | 4 ms | (the card went through the listener) |
 | the change the owner approved | applied | held |
 | the listener's own change, with the owner's factor moved onto it | held, never ran | applied |
-| bytes the pipe carried | 18,539 | 0 |
+| bytes the pipe carried | 18,537 | 0 |
 | of 10 secrets looked for in them (the PIN and code, the unlock, the token, a card, a Bot API request) | 0 in clear | |
 | the helper's IP sockets | 0 (3 Unix sockets), NoNewPrivs 1, Seccomp 2, CapEff `30fb` | 0 |
 
-The same run passed TestJailVlab's 22 subtests on this tree. In the test suite on the same host:
-`mutate-ownbot.py` caught every mutant by the test named for it, `FuzzTelegramUpdates` ran 1,392,133
-inputs in two minutes with no failure, and the package's statement coverage read 88.9%.
+The same run passed TestJailVlab's 22 subtests on this tree. In the test suite on the same host: the
+bot's tests under `-race`; `mutate-held.py` 169 and `mutate-split.py` 29 mutants, each caught by the
+test named for it; `FuzzTelegramUpdates` ran 1,392,133 inputs in two minutes with no failure; the
+package's statement coverage read 89.7%, against 90.3% on origin/main, the difference being the
+listener's dial to Telegram and the start of its pipe, which the vlab run above exercises and the
+unit tests stand a server in for.
 
 ## The split of privileges
 

@@ -126,10 +126,11 @@ Feature: the owner approves past the listener, through the router's own bot
     Then the window closes and the held changes are rejected
     And an /unlock of the wrong shape, or for no such client, tries nothing, while a wrong PIN counts as a try
 
-  # bound to: TestWhatArrivedWhileTheHelperWasNotReadingIsNotUsed
+  # bound to: TestWhatArrivedWhileTheHelperWasNotReadingIsNotUsed, TestTheFirstMessageAfterBindingIsRead
   Scenario: what reached the bot while the helper was not reading is not used
     When the helper starts with a PIN and an /unlock waiting in the chat
     Then both are deleted, the owner is told, nothing is tried, and the card of what waits goes out
+    And a message sent once the helper reads, the owner's first right after binding among them, is read as it is
 
   # bound to: TestAListenerThatAltersTheBytesBreaksTheConnection
   Scenario: a listener that alters the bytes breaks the connection

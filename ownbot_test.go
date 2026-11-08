@@ -724,3 +724,23 @@ func TestTheBotsFailureIsOneWordOfAFixedSet(t *testing.T) {
 		t.Fatalf("a failure that is not a word reached the status: %s", b)
 	}
 }
+
+// The owner's first message after binding is read, not taken for one sent while the helper was not
+// reading: what the helper drains at its start is what was waiting then. The deletion of the binding
+// code is held, so the message arrives while the binding is still being answered.
+func TestTheFirstMessageAfterBindingIsRead(t *testing.T) {
+	r := newBotRig(t, "")
+	code := r.bindCode()
+	release := r.tg.holdDeletes()
+	defer release()
+	r.tg.say(testOwner, testOwner, "private", "/start "+code)
+	waitFor(t, "the owner's chat to be bound", 10*time.Second, func() bool { return ownerBotFilesOf(r.state).chat() == testOwner })
+	r.tg.say(testOwner, testOwner, "private", "/unlock "+apPIN)
+	release()
+	r.waitText(testOwner, 0, "Unlocked a until")
+	for _, m := range r.tg.sentTo(testOwner) {
+		if strings.Contains(m.Text, "was not used") {
+			t.Fatalf("the first message after binding was taken for backlog: %q", m.Text)
+		}
+	}
+}

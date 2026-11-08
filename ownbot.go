@@ -478,7 +478,7 @@ func (b *ownerBot) noteLocked(name string, err error) {
 	}
 }
 
-// drain reads what reached the bot while the helper was not reading, and takes none of it as an
+// drain reads what reached the bot while the helper was not reading, once, and takes none of it as an
 // answer: a message from the owner that looks like a factor is deleted and the owner is told once.
 // A binding code is still taken, since it decides nothing but which chat is the owner's.
 func (b *ownerBot) drain(ctx context.Context, tc *telegramClient, offset *int64) error {
@@ -515,6 +515,12 @@ func (b *ownerBot) drain(ctx context.Context, tc *telegramClient, offset *int64)
 				}
 			}
 			b.mu.Unlock()
+		}
+		// What was waiting is what came in this answer; only a full one means more waited. Asking
+		// again until nothing comes would take a message sent just now, as the owner's first one after
+		// binding, for one sent while the helper was not reading.
+		if len(ups) < maxUpdatesPerPoll {
+			return nil
 		}
 	}
 	return nil
