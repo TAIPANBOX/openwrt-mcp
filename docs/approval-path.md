@@ -409,10 +409,13 @@ routes the owner's factor back through the listener and must turn it red.
   `telegram_error`, `tls`, `pipe`, `network`, `other`), in that file, in the status and in the log,
   and never an error's text, which could carry what a URL carried.
 - **In the chat.** The card is the record's card, plain text, with Approve and Reject. Approve
-  restates the headline from the record and opens a prompt of 180 seconds; the next text from the
-  owner is deleted, then read as `PIN code` (or `code`, for a section whose factor is `totp`), and
-  approved by the same checks in the same order as `action_approve`, the factor last and the step
-  spent. A message that looks like a factor with no prompt open, or after it closed, is deleted and
+  restates the headline from the record, says exactly what to send (the PIN, a space and the six
+  digits of the app's entry for this client at this router, with an example) and opens a prompt of
+  180 seconds. Each text from the owner is deleted, then read as `PIN code` (or `code`, for a section
+  whose factor is `totp`), the code whole or in the two halves the app shows (`305 917`); a PIN sent
+  alone waits for the code in the next message, within the same 180 seconds and without renewing
+  them. The factor is approved once, by the same checks in the same order as `action_approve`, the
+  factor last and the step spent. A message that looks like a factor with no prompt open, or after it closed, is deleted and
   counts nothing. `/unlock PIN code` and `/lock` work as they did in the agent's chat; with more than
   one approval section they name the client first. The outcome edits the card, and so does an
   expiry, a withdrawal or a `/lock`.
@@ -427,5 +430,14 @@ routes the owner's factor back through the listener and must turn it red.
 - **A restart.** Held changes and prompts live in memory, so a restart drops them, as before. What
   reached the bot while the helper was not reading is read once at its start and never acted on: a
   message that looks like a factor is deleted, and the owner is told it was not used.
+- **The agent.** A held change's answer, with the bot bound, tells the agent that the card is in the
+  router's own chat, that the owner taps Approve and sends the PIN and the code there, that `/unlock`
+  does not approve it, and that nobody tells the agent the outcome, so it reads `action_status`.
+- **The router is told.** Binding, and removing the bot or giving it a new token, send the procd
+  service event `openwrt-mcp.owner_bot` with the state `bound` or `cleared`. hermes-openwrt's init
+  restarts the agent on it, so the agent leaves the approval path, or takes it back, whether or not
+  the page that set the bot up is still open.
+- **The log.** Each card sent to the chat, and each card closed with its outcome, is a line in the
+  router's log, so the log says whether a held change reached the owner.
 - **Without a bot.** A router with no bot bound keeps today's path, and the gap this page opens with
   stays for it: the listener carries the card and the factor.

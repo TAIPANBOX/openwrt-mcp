@@ -902,7 +902,7 @@ func (s *Server) gate(ctx context.Context, client, name string, in any, shape ca
 				if h == nil {
 					return finish(refusal, true, OutcomeDenied, "", refusal)
 				}
-				return finish(heldText(h), false, OutcomeHeld,
+				return finish(heldText(h, s.ownerBotChannel()), false, OutcomeHeld,
 					"held "+h.ID+" ref "+h.Hash[:8]+": "+strings.Join(h.Headlines, "; "), "")
 			}
 		}

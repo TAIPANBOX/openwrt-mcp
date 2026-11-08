@@ -63,6 +63,10 @@ echo "--- the owner's approval through the router's own bot, with a hostile list
 rsh 'cd /tmp && OPENWRT_MCP_OWNBOT_E2E=1 /tmp/e2e.test -test.run "^TestOwnBotVlab$" -test.v -test.count=1 2>&1' > "$WORK/ownbot.out" || rc=$?
 grep -E '^(---|OWNBOT|FAIL|PASS|ok)|_vlab_test' "$WORK/ownbot.out" || tail -30 "$WORK/ownbot.out"
 
+echo "--- the router's own bot, configured as the Flint 2 was, both parts as procd starts them"
+rsh "cd /tmp && FLINT2_GAP=${FLINT2_GAP:-5} OPENWRT_MCP_OWNBOT_E2E=1 /tmp/e2e.test -test.run '^TestOwnBotFlint2Vlab\$' -test.v -test.count=1 -test.timeout 30m 2>&1" > "$WORK/flint2.out" || rc=$?
+grep -E '^(---|FLINT2|FAIL|PASS|ok)|_vlab_test' "$WORK/flint2.out" || tail -30 "$WORK/flint2.out"
+
 echo "--- what the kernel shows, from the router"
 rsh 'for p in $(pidof openwrt-mcp); do
   printf "pid %s: " "$p"; head -c 60 /proc/$p/cmdline | tr "\0" " "; echo

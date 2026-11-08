@@ -104,7 +104,7 @@ tar -tzf "$WORK/data.tar.gz" \
 	| sed 's#^\./##' \
 	| grep -v '/$' \
 	| grep -v '^$' \
-	| sort > "$WORK/ipk-files"
+	| LC_ALL=C sort > "$WORK/ipk-files"
 
 # ---- 2 through 6: everything that needs a real apk binary and a real OpenWrt rootfs.
 # One container, one script, because each `docker run` is a fresh container and state
@@ -203,6 +203,16 @@ if [ "$perm" != "-rw-r--r--" ]; then
 	echo "FAIL [4/10] check_modes: /etc/config/openwrt-mcp is $perm, want -rw-r--r-- (644)"
 	exit 1
 fi
+# Owned by root. apk mkpkg records each file's owner as it finds it on disk, and a package built as
+# a CI runner's uid installed its binary, and the .apk-new beside a changed config, owned by nobody
+# (seen on a Flint 2, 2026-11-08). Read from busybox's "ls -ln": the third and fourth fields.
+for f in $(cat /work/apk-files); do
+	own=$(ls -ln "/$f" | awk '{print $3":"$4}')
+	if [ "$own" != "0:0" ]; then
+		echo "FAIL [4/10] check_modes: /$f is owned by $own, want root (0:0)"
+		exit 1
+	fi
+done
 echo "PASS [4/10] check_modes"
 
 # ---- 5. service enabled ----
@@ -233,6 +243,14 @@ fi
 if ! grep -qF "$marker" /etc/config/openwrt-mcp; then
 	echo "FAIL [6/10] check_config_survives: marker line lost after reinstall"
 	exit 1
+fi
+# The package's own copy, set beside the owner's changed config, is root's too.
+if [ -e /etc/config/openwrt-mcp.apk-new ]; then
+	own=$(ls -ln /etc/config/openwrt-mcp.apk-new | awk '{print $3":"$4}')
+	if [ "$own" != "0:0" ]; then
+		echo "FAIL [6/10] check_config_survives: /etc/config/openwrt-mcp.apk-new is owned by $own, want root (0:0)"
+		exit 1
+	fi
 fi
 echo "PASS [6/10] check_config_survives"
 

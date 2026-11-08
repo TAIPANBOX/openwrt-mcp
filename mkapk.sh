@@ -126,11 +126,19 @@ chmod 0755 "$BUILD/post-install" "$BUILD/post-upgrade" "$BUILD/pre-deinstall"
 #
 # A host apk is only usable if it is v3; apk-tools 2 has no mkpkg subcommand at all, so
 # probing for the subcommand is the check, not the version string.
+#
+# apk mkpkg records each file's owner as it finds it on disk, and has no option to say otherwise.
+# The tree is staged as whoever builds, and a package built as a CI runner's uid installed its
+# binary, and the .apk-new beside a changed config, owned by nobody (on a Flint 2, 2026-11-08). So
+# the tree is root's while it is packaged: a host apk is used only as root, and in the container the
+# tree is made root's, packaged, and handed back to the builder so the cleanup can remove it.
 run_mkpkg() {
-	if command -v apk >/dev/null 2>&1 && apk mkpkg --help >/dev/null 2>&1; then
+	if [ "$(id -u)" = 0 ] && command -v apk >/dev/null 2>&1 && apk mkpkg --help >/dev/null 2>&1; then
+		chown -R 0:0 "$DATA"
 		apk mkpkg "$@"
 	elif command -v docker >/dev/null 2>&1; then
-		docker run --rm -v "$BUILD:$BUILD" -w "$BUILD" "$ALPINE" apk mkpkg "$@"
+		docker run --rm -v "$BUILD:$BUILD" -w "$BUILD" -e OWN="$(id -u):$(id -g)" -e DATA="$DATA" -e BUILD="$BUILD" \
+			"$ALPINE" sh -c 'chown -R 0:0 "$DATA" && apk mkpkg "$@"; rc=$?; chown -R "$OWN" "$BUILD"; exit $rc' mkpkg "$@"
 	else
 		echo "mkapk.sh: need either apk-tools v3 on PATH or docker to run $ALPINE" >&2
 		echo "mkapk.sh: apk v3 is the only writer of the package format; see the header" >&2

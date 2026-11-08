@@ -275,6 +275,21 @@ func (s *Server) notifyBot() {
 	}
 }
 
+// ownerBotEventType is the procd service event that says the owner's chat changed: bound, or cleared
+// when the bot is removed or given a new token. hermes-openwrt's init restarts the agent on it, so the
+// agent leaves the approval path, or takes it back, whether or not the page that set the bot up is
+// still open. The name is a contract with that init.
+const ownerBotEventType = "openwrt-mcp.owner_bot"
+
+// ownerBotEvent tells the router that the owner's chat is now state. A router that cannot be told is
+// said in the log, and nothing else changes.
+func ownerBotEvent(state string) {
+	data := `{"type":"` + ownerBotEventType + `","data":{"state":"` + state + `"}}`
+	if _, err := run(context.Background(), defaultCmdTimeout, "ubus", "call", "service", "event", data); err != nil {
+		log.Printf("openwrt-mcp: the router's bot: the router was not told the owner's chat is %s (ubus call service event failed)", state)
+	}
+}
+
 // ---------------------------------------------------------------- the bot
 
 type ownerBotOptions struct {
@@ -296,6 +311,9 @@ type botCard struct {
 type botPrompt struct {
 	id, hash string
 	until    time.Duration
+	// pin is a PIN the owner sent alone after Approve, held until the code follows in the next message
+	// or the prompt closes, whichever comes first; it is tried only with that code.
+	pin string
 }
 
 type ownerBot struct {
@@ -664,6 +682,7 @@ func (b *ownerBot) tryBind(ctx context.Context, tc *telegramClient, m *tgMessage
 		summary += "; revoked the token of " + strings.Join(revoked, ", ") + ": the router's chat approves now"
 	}
 	b.s.audit.Record(AuditEvent{Time: nowISO(), Client: "<owner-bot>", Tool: "owner_bot_bind", Outcome: OutcomeOK, Summary: summary})
+	ownerBotEvent("bound")
 	b.deleteMsg(ctx, tc, m)
 	b.say(ctx, tc, m.Chat.ID, "This chat now approves changes for "+b.host+". A change that waits for you appears here "+
 		"as a card: approve it with a tap and then one message, your PIN and the code. /unlock PIN code opens the "+
@@ -723,7 +742,7 @@ func (b *ownerBot) press(ctx context.Context, tc *telegramClient, cb *tgCallback
 		}
 		b.prompt = &botPrompt{id: card.id, hash: card.hash, until: b.opt.mono() + promptLife}
 		reply("")
-		b.say(ctx, tc, b.owner, promptText(v, b.s.approvalFactor(v.Client)))
+		b.say(ctx, tc, b.owner, promptText(v, b.s.approvalFactor(v.Client), b.appEntry(v.Client)))
 	case "r":
 		b.prompt = nil
 		if _, _, err := b.s.rejectHeld(approverRef{}, card.id); err != nil {
@@ -735,14 +754,28 @@ func (b *ownerBot) press(ctx context.Context, tc *telegramClient, cb *tgCallback
 	}
 }
 
-// promptText restates the change from the record and asks for the factor.
-func promptText(v actionView, factor string) string {
-	ask := "Send your PIN and the code from your authenticator, in one message: for example 1234 567890."
-	if factor == factorTOTP {
-		ask = "Send the code from your authenticator."
+// appEntry is how the owner's authenticator app names the entry the codes come from: the issuer
+// `mfa enrol` gives and the client at this router, as otpauthURI writes them.
+func (b *ownerBot) appEntry(client string) string {
+	if h := deviceLabel(); h != "" {
+		return "openwrt-mcp, " + client + "@" + h
 	}
-	return fmt.Sprintf("Approve %s (ref %s)? It does this:\n%s\n\n%s This waits for %d minutes; the message is deleted "+
-		"as soon as it arrives.", v.ID, v.Ref, v.Headline, ask, int(promptLife/time.Minute))
+	return "openwrt-mcp, " + client
+}
+
+// promptText restates the change from the record and says exactly what to send.
+func promptText(v actionView, factor, entry string) string {
+	ask := "Send your PIN, a space and the 6 digits from your authenticator app (the entry " + entry + "), in one " +
+		"message: for example 482193 305917. The code may be split as the app shows it (305 917), and the PIN may " +
+		"come first with the code in the next message."
+	switch factor {
+	case factorTOTP:
+		ask = "Send the 6 digits from your authenticator app (the entry " + entry + "): for example 305917."
+	case factorPIN:
+		ask = "Send your PIN."
+	}
+	return fmt.Sprintf("Approve %s (ref %s)? It does this:\n%s\n\n%s This waits for %d minutes; each message is "+
+		"deleted as soon as it arrives.", v.ID, v.Ref, v.Headline, ask, int(promptLife/time.Minute))
 }
 
 // factor reads the message after Approve: deleted first, then read, and tried once. Callers hold
@@ -761,7 +794,24 @@ func (b *ownerBot) factor(ctx context.Context, tc *telegramClient, m *tgMessage,
 		b.say(ctx, tc, b.owner, "That was not used: "+p.id+" is not waiting any more.")
 		return
 	}
-	f, ok := parseFactor(text, b.s.approvalFactor(v.Client))
+	kind := b.s.approvalFactor(v.Client)
+	f, ok := parseFactor(text, kind)
+	if !ok && kind == factorPINTOTP {
+		g, digits := digitGroups(text)
+		switch {
+		case digits && p.pin == "" && len(g) == 1 && pinShape(g[0]):
+			// The PIN alone: the code may follow in the next message, while the same prompt lasts.
+			p.pin = g[0]
+			b.prompt = p
+			b.say(ctx, tc, b.owner, "Now the 6 digits from your authenticator app (the entry "+b.appEntry(v.Client)+
+				"), in the next message. Nothing was tried yet.")
+			return
+		case digits && p.pin != "":
+			if code, isCode := codeOf(g); isCode {
+				f, ok = unlockAttempt{PIN: p.pin, Code: code}, true
+			}
+		}
+	}
 	if !ok {
 		b.say(ctx, tc, b.owner, "That was not a PIN and a code, so nothing was tried. Tap Approve again.")
 		return
@@ -908,6 +958,7 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 			delete(b.retry, v.ID)
 			b.cards[v.ID] = &botCard{id: v.ID, hash: v.Hash, msgID: id, text: text, cut: cut}
 			b.byMsg[id] = v.ID
+			log.Printf("openwrt-mcp: the router's bot: sent the card of %s to the bound chat", v.ID)
 		case c != nil && !c.final && v.Status != statusHeld && v.Status != statusApproving && !offline:
 			if err := b.closeCard(ctx, tc, c, outcomeLine(v), now); err != nil && !telegramRefused(err) {
 				offline = true
@@ -932,6 +983,8 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 	if b.prompt != nil {
 		if v, ok := b.s.heldView(b.prompt.id); !ok || v.Status != statusHeld {
 			b.prompt = nil
+		} else if now >= b.prompt.until {
+			b.prompt.pin = "" // a PIN held for a code that never came is not kept past the prompt
 		}
 	}
 }
@@ -961,6 +1014,7 @@ func (b *ownerBot) closeCard(ctx context.Context, tc *telegramClient, c *botCard
 	}
 	delete(b.retry, key)
 	c.final = true
+	log.Printf("openwrt-mcp: the router's bot: the card of %s now says %s", c.id, strings.TrimSuffix(line, "."))
 	if b.prompt != nil && b.prompt.id == c.id {
 		b.prompt = nil
 	}
@@ -1089,37 +1143,53 @@ func isDigits(s string) bool {
 	return ok && len(g) == 1
 }
 
-// looksLikeFactor says whether a message could carry a PIN or a code: one or two groups of digits.
-// Such a message is never left in the chat.
+// looksLikeFactor says whether a message could carry a PIN or a code: up to three groups of digits,
+// a code split as the app shows it among them. Such a message is never left in the chat.
 func looksLikeFactor(text string) bool {
 	g, ok := digitGroups(text)
-	return ok && len(g) <= 2
+	return ok && len(g) <= 3
 }
 
 // carriesFactor says whether a message may hold a PIN or a code: one that looks like a factor, or an
 // /unlock.
 func carriesFactor(text string) bool { return looksLikeFactor(text) || isCommand(text, "/unlock") }
 
-// parseFactor reads "PIN code", "PIN" or "code", as the factor asks.
+// pinShape is a PIN's length.
+func pinShape(s string) bool { return len(s) >= 4 && len(s) <= 8 }
+
+// codeOf reads a code typed whole (305917) or as the authenticator app shows it, in two halves
+// (305 917). Nothing looser is a code.
+func codeOf(g []string) (string, bool) {
+	switch {
+	case len(g) == 1 && len(g[0]) == totpDigits:
+		return g[0], true
+	case len(g) == 2 && len(g[0]) == totpDigits/2 && len(g[1]) == totpDigits/2:
+		return g[0] + g[1], true
+	}
+	return "", false
+}
+
+// parseFactor reads "PIN code", "PIN" or "code", as the factor asks; the code whole or as the app
+// shows it.
 func parseFactor(text, factor string) (unlockAttempt, bool) {
 	g, ok := digitGroups(text)
 	if !ok {
 		return unlockAttempt{}, false
 	}
-	pinOK := func(s string) bool { return len(s) >= 4 && len(s) <= 8 }
-	codeOK := func(s string) bool { return len(s) == totpDigits }
 	switch factor {
 	case factorPINTOTP:
-		if len(g) == 2 && pinOK(g[0]) && codeOK(g[1]) {
-			return unlockAttempt{PIN: g[0], Code: g[1]}, true
+		if len(g) >= 2 && pinShape(g[0]) {
+			if code, isCode := codeOf(g[1:]); isCode {
+				return unlockAttempt{PIN: g[0], Code: code}, true
+			}
 		}
 	case factorPIN:
-		if len(g) == 1 && pinOK(g[0]) {
+		if len(g) == 1 && pinShape(g[0]) {
 			return unlockAttempt{PIN: g[0]}, true
 		}
 	case factorTOTP:
-		if len(g) == 1 && codeOK(g[0]) {
-			return unlockAttempt{Code: g[0]}, true
+		if code, isCode := codeOf(g); isCode {
+			return unlockAttempt{Code: code}, true
 		}
 	}
 	return unlockAttempt{}, false

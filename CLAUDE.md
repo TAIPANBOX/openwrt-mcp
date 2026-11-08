@@ -123,15 +123,20 @@ before the 2026-10-17 security wave, so the numbering starts here.
     over TLS to `api.telegram.org` that ends in the helper and runs over the listener's pipe; the pipe
     serves root only, dials that one address and copies bytes it has no key for; the binary's only IP
     sockets are the listener's two and the status probe's. A tap counts only from the bound private
-    chat, on the message the helper sent for a record still held. The factor is the next message after
-    Approve, within 180 seconds, deleted before it is read, and runs the order of checks
-    `action_approve` runs, the factor last and its step spent; a factor with no prompt, after the
-    prompt closed, or sent while the helper was not reading counts nothing. A card is one Telegram
+    chat, on the message the helper sent for a record still held. The factor follows Approve within the
+    same 180 seconds, in one message or as the PIN and then the code, the code whole or in the two
+    halves the authenticator app shows; each message is deleted before it is read, and the factor is
+    tried once and runs the order of checks `action_approve` runs, the factor last and its step spent;
+    a PIN alone renews nothing, and a factor with no prompt, after the prompt closed, or sent while the
+    helper was not reading counts nothing. A card is one Telegram
     message: a change whose card would not fit one whole is refused when it is held, a card is never
     cut for the owner to approve, and one card Telegram refuses never holds back another. A chat is
     bound only by the one-time code `owner-bot bind` makes, before the end written in its file and
     within 30 minutes of the helper's own clock, and until then the bot answers nobody. While a chat is bound, no MCP client lists, approves, rejects, unlocks or
-    locks for an approval section, and binding revokes the approver clients' tokens. The bot's token is
+    locks for an approval section, and binding revokes the approver clients' tokens. Binding, and
+    removing the bot or giving it a new token, tell the router with the procd service event
+    `openwrt-mcp.owner_bot` (state `bound` or `cleared`), which hermes-openwrt's init restarts the
+    agent on; each card sent and each card closed is a line in the log. The bot's token is
     in no error and no file but its own, and a failure of the bot is told outside the helper (its seen
     file, the status, the log) by one word of a fixed set, never by an error's text. A router with no bot bound keeps the MCP approver path, and
     the listener then carries its factor (`docs/privilege-split.md`). `@decided 2026-11-08`: the
