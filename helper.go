@@ -313,8 +313,9 @@ func serveIDs() (uid, gid int, err error) {
 	return uid, gid, nil
 }
 
-// runHelper is `openwrt-mcp helper` once the server is up: the socket, then requests until it fails.
-func runHelper(s *Server, path string) error {
+// runHelper is `openwrt-mcp helper` once the server is up: the socket, the router's own bot over the
+// listener's pipe at relay, then requests until it fails.
+func runHelper(s *Server, path, relay string) error {
 	uid, gid, err := serveIDs()
 	if err != nil {
 		return err
@@ -325,6 +326,7 @@ func runHelper(s *Server, path string) error {
 	}
 	log.Printf("openwrt-mcp %s helper on %s, serving uid %d only (%d policies, %d paired clients)",
 		version, path, uid, len(s.cfg().Policies), len(s.tokens.Clients()))
+	s.startOwnerBot(context.Background(), ownerBotOptions{relay: relay, relayUID: uid})
 	return newHelperServer(s, uid).serve(ln)
 }
 

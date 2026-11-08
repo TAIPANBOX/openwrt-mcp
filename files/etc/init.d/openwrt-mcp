@@ -9,7 +9,9 @@
 # serve    `openwrt-mcp serve`, the listener, as the account openwrt-mcp. It parses HTTP and MCP on
 #          127.0.0.1 and forwards each bearer token and each typed call to the helper. It holds no
 #          capability (all five lists of its file are empty), may start no program (its filter kills
-#          execve), has no ubus ACL, and reads no file of the daemon's state.
+#          execve), has no ubus ACL, and reads no file of the daemon's state. It also serves the pipe
+#          the router's own bot reaches Telegram through: for each connection from root it dials
+#          api.telegram.org:443 and copies bytes it has no key for (the TLS is the helper's).
 #
 # Both get no_new_privs, and procd applies each capability file only through ujail, so each has a
 # bare jail line: procd then runs `ujail [-U openwrt-mcp -G openwrt-mcp] -C <file> -c -- ...`, which
@@ -39,8 +41,18 @@ ensure_account() {
 	user_exists "$ACCOUNT" || user_add "$ACCOUNT" "" "$gid" "$ACCOUNT" /var/run/openwrt-mcp /bin/false
 }
 
+# The listener's pipe to Telegram, for the router's own bot (docs/approval-path.md): a directory of the
+# listener's own, 0700, where it serves the socket the helper reaches as root. /var/run is RAM, so it is
+# made at every start.
+RELAY_DIR=/var/run/openwrt-mcp-relay
+
+ensure_relay_dir() {
+	mkdir -p "$RELAY_DIR" && chown "$ACCOUNT:$ACCOUNT" "$RELAY_DIR" && chmod 0700 "$RELAY_DIR"
+}
+
 start_service() {
 	ensure_account || { echo "openwrt-mcp: cannot make the account $ACCOUNT" >&2; return 1; }
+	ensure_relay_dir || { echo "openwrt-mcp: cannot make $RELAY_DIR" >&2; return 1; }
 
 	procd_open_instance helper
 	procd_set_param command "$PROG" helper

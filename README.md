@@ -117,9 +117,12 @@ A grant decides which tools and scopes a client may use. Two more steps decide h
   moves on.
 - **The owner's approval.** A client with an approval section has its high-impact changes held:
   the daemon applies the change to a RAM copy of the configs with the router's own uci, compares the
-  state it would leave, and keeps the exact call. Only the approver's client approves it, with the
-  PIN and a code, against the hash of the card the owner was shown. It then runs once, with a 300 s
-  rollback. What only a person may do (`exec`, a WireGuard key, the agent's own config, SSH, a
+  state it would leave, and keeps the exact call. Only the owner approves it, with the PIN and a
+  code, against the hash of the card the owner was shown. It then runs once, with a 300 s rollback.
+  With the router's own bot set up, the daemon's root part sends the card to the owner's Telegram
+  chat itself and reads the answer itself, so the card and the code never pass the part that meets
+  the network ([approval-path.md](docs/approval-path.md)); without one, the approver's MCP client
+  approves, as before. What only a person may do (`exec`, a WireGuard key, the agent's own config, SSH, a
   firmware flash) is refused for such a client whatever its grants.
 
 ```sh
@@ -148,7 +151,14 @@ config policy
 ![A held change: uci_apply answered HELD with nothing applied; the owner's client lists the card and hash; the owner approves with a PIN and a code; the change runs once with a 300 s rollback](docs/held.svg)
 
 hermes-openwrt sets all of this up for its agent: the owner chooses a PIN and a phone in LuCI and
-approves from Telegram. Every rule, the held list, the card and the second factor in full:
+approves from Telegram. The router's own bot takes one step, once per router:
+
+```sh
+openwrt-mcp owner-bot set < token.txt     # the token BotFather gave, on standard input
+openwrt-mcp owner-bot bind                # a one-time code and the t.me link: press Start on it
+openwrt-mcp owner-bot status              # bound, the bot's name, its last error
+```
+ Every rule, the held list, the card and the second factor in full:
 [docs/security.md](docs/security.md).
 
 ## One call, check by check

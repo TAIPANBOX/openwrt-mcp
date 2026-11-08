@@ -32,7 +32,7 @@ is adapted from [Haven](https://github.com/GlassOnTin/Haven)'s MCP backbone.
 | **Package installs** | `apk_add` installs packages by name from the official OpenWrt feeds on `downloads.openwrt.org` and from nowhere else: never a link, a local file, a custom feed or a mirror, and never with signature checks off. Nothing grants it by default. See [tools.md](tools.md#apk_add-installs-from-the-official-openwrt-feeds-only). |
 | **exec arguments** | `exec` runs a program only with an argument form its policy names. A program granted with no form runs with no arguments. See [tools.md](tools.md#exec-runs-only-the-argument-forms-its-grant-names). |
 | **Second factor** | A policy can put any of its tools behind the owner's unlock: a PIN, a code from an authenticator app, or both. One unlock opens a window, 15 minutes by default. Guessing costs time that grows, and neither a restart nor a reboot forgives it. See [below](#the-second-factor). |
-| **High-impact changes** | For a client with an approval section, a change that opens the router to the internet, weakens the firewall, rewires the network, changes VPN routing, DNS or the time servers, opens Wi-Fi without a password into a trusted network, stops a guard service or reboots is held, whatever the window says, and runs only once the owner's client approves that one change with a PIN and a code. What only a person may do is refused outright. See [below](#high-impact-changes-wait-for-the-owners-approval). |
+| **High-impact changes** | For a client with an approval section, a change that opens the router to the internet, weakens the firewall, rewires the network, changes VPN routing, DNS or the time servers, opens Wi-Fi without a password into a trusted network, stops a guard service or reboots is held, whatever the window says, and runs only once the owner approves that one change with a PIN and a code: in the router's own Telegram chat once its bot is bound, where the card and the code never pass the listener, or else from the owner's client. What only a person may do is refused outright. See [below](#high-impact-changes-wait-for-the-owners-approval). |
 | **Secrets in the audit log** | A value is written as `<redacted>` when the option, the section or the argument it travels in names a credential. Names stay visible, so the log still shows what changed. See [below](#the-audit-log-never-holds-a-secrets-value). |
 | **Secrets in config reads** | Every `uci_get` answer has the value of each secret option (Wi-Fi keys, passwords, private and preshared keys, RADIUS secrets) replaced by `'<redacted>'`, for every client, with no way to turn it off. What a tool answers reaches the agent's model provider. See [below](#uci_get-never-returns-a-secret). |
 | **WireGuard private key** | A new client's private key reaches uci on standard input, never as an argument, where every process on the router could read it. |
@@ -285,7 +285,8 @@ The card is the daemon's. It is written from the record: a headline built from p
 (addresses through `netip`, ports as numbers, anything else shown as unreadable), then every changed
 key with its value before and after. A secret's value reads `<redacted>`; whatever the client chose
 is quoted after its key with anything unprintable escaped, so a right-to-left override or a line
-break cannot reorder or forge a line. A card over 3500 characters is refused, never cut short:
+break cannot reorder or forge a line. A card over 3500 characters, or over 3696 units as Telegram counts
+them (UTF-16, so it fits one message with room for its outcome), is refused, never cut short:
 
 ```
 Router change waiting for you (KQWPT, ref 3f9a12c0, expires in 10 min)
@@ -334,6 +335,50 @@ seconds that the client may confirm without an unlock; the configs are compared 
 last step before anything is staged. An approval never opens or extends the window, and a window
 approves nothing. Rejecting takes no factor; the approver's `mfa_lock {client}` closes that client's
 window and rejects every change it has held.
+
+### The router's own bot
+
+`@decided 2026-11-08`: the root helper sends the card and reads the owner's answer itself, through a
+bot of the router's own, so the card, the tap and the factor never pass the listener
+([approval-path.md](approval-path.md), option A2). The owner sets it up once per router:
+
+```sh
+openwrt-mcp owner-bot set < token.txt   # the token BotFather gave; standard input, never an argument
+openwrt-mcp owner-bot bind              # a one-time code and https://t.me/<bot>?start=<code>
+openwrt-mcp owner-bot status --json     # configured, bound, the bot's name, its last error
+openwrt-mcp owner-bot clear             # back to the owner's client
+```
+
+Pressing Start on the link sends the code, and the private chat that sends it is bound. Until then the
+bot answers nobody, and the code works once, for 30 minutes of the helper's own clock from when it first
+sees it; `owner-bot bind` writes that end in the code's file, and a code past it is removed as the
+helper starts. Then, in that chat:
+
+| The owner | The router |
+|---|---|
+| | sends the record's card, byte for byte, with Approve and Reject |
+| taps Approve | restates the headline from the record and waits 180 seconds for one message |
+| sends `PIN code` | deletes the message, then runs the checks `action_approve` runs, in the same order, the factor last and its step spent, and edits the card with the outcome |
+| taps Reject | rejects it |
+| sends `/unlock PIN code` or `/lock` | deletes the message, then opens or closes the agent's window |
+
+A tap counts only from the bound chat, on the message the helper sent for a record still held. A card
+Telegram does not take waits with a delay of its own while the others go out. A message that looks
+like a factor with no prompt open, after the prompt closed, or sent while the helper
+was not reading is deleted and counts nothing. While a chat is bound, `action_list`, `action_approve`,
+`action_reject`, and `mfa_unlock` and `mfa_lock` naming another client are refused over MCP before
+anything is looked up, and binding revokes the tokens of the clients named as approvers.
+
+The helper still opens no IP socket. The listener serves a pipe on
+`/var/run/openwrt-mcp-relay/telegram.sock` (its own directory, 0700), serves only root, dials
+`api.telegram.org:443` itself and copies bytes both ways; the helper checks the pipe is the listener's,
+runs TLS for `api.telegram.org` over it against the system's roots, TLS 1.2 at least, with no proxy. A
+listener that alters what it carries breaks the connection, and one that answers in Telegram's place
+fails the certificate. The token lives in `/etc/openwrt-mcp/owner-bot/token` (0600) and in no error or
+log line; a failure of the bot is told by one word of a fixed set (`token_rejected`, `tls`, `pipe`,
+`network` and the rest), never by an error's text. Approving needs the internet and Telegram, as it did before. A router with no bot bound
+keeps the owner's client, and its approval then passes the listener
+([privilege-split.md](privilege-split.md#what-this-holds-and-what-it-does-not)).
 
 ### How far the rules reach
 
@@ -451,6 +496,7 @@ openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities'
 | `actions_held_for_approval` | 0.5.0.5 | high-impact changes wait for the owner's approval |
 | `second_factor_throttle_persisted` | 0.5.0.8 | the guess throttle outlives a restart and a reboot, and the disk holds no time |
 | `listener_holds_no_root` | 0.5.0.9 | the part that parses HTTP and MCP runs as its own account with no capability, and refuses to run as root |
+| `owner_approves_past_the_listener` | unreleased | once the router's own bot is bound, the owner's card and factor travel between the helper and Telegram over TLS that ends in the helper, and no MCP client approves |
 
 The same report gives each client's `mfa` object (`factor`, `totp_enrolled`, `totp_pending`,
 `pin_set`, `failures`, and `live_state`) and, for a client with an approval section, its `approval`

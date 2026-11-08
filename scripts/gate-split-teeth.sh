@@ -40,7 +40,7 @@ plant check_listener_holds_no_capability "the bounding list not named" files/etc
 plant check_account_is_made "the account never made" $I '/^[[:space:]]*ensure_account ||/d'
 plant check_account_is_made "the account made without user_add" $I 's/user_add "$ACCOUNT"/true "$ACCOUNT"/'
 plant check_helper_does_not_listen "the helper listens on TCP" helper.go 's|ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})|ln, err := net.ListenUnix("unix", \&net.UnixAddr{Name: path, Net: "unix"}); _, _ = net.Listen("tcp", "0.0.0.0:1")|'
-plant check_helper_does_not_listen "the helper command starts the listener" main.go 's|must(runHelper(s, \*socketPath))|go newFrontend(s).Serve(s.cfg().Listen); must(runHelper(s, *socketPath))|'
+plant check_helper_does_not_listen "the helper command starts the listener" main.go 's|must(runHelper(s, \*socketPath, \*relayPath))|go newFrontend(s).Serve(s.cfg().Listen); must(runHelper(s, *socketPath, *relayPath))|'
 plant check_helper_does_not_listen "the serve command builds the Server" main.go 's|hc := &helperClient{path: \*socketPath}|_, _ = NewServer(*configPath, *statePath); hc := \&helperClient{path: *socketPath}|'
 plant check_socket_is_the_listeners "the socket open to everyone" helper.go 's/sock = 0o660/sock = 0o666/'
 plant check_socket_is_the_listeners "the directory open to everyone" helper.go 's/mode = 0o750/mode = 0o755/'

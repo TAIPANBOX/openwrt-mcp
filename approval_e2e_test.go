@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Held actions, end to end through the real MCP tool handlers. The router is a scratch
@@ -749,23 +751,49 @@ func TestCardIsWhatIsApplied(t *testing.T) {
 func TestCardOverTheLimitIsRefused(t *testing.T) {
 	r := newApRig(t, "")
 	r.unlock()
-	after := portForwardAfter
-	changes := append([]map[string]any(nil), portForward...)
-	for i := 0; i < 60; i++ {
-		v := strings.Repeat("x", 60)
-		after += fmt.Sprintf("firewall.ssh_nas.extra_%02d='%s'\n", i, v)
-		changes = append(changes, map[string]any{"config": "firewall", "section": "ssh_nas", "option": fmt.Sprintf("extra_%02d", i), "value": v})
+	try := func(n int) (string, bool) {
+		after := portForwardAfter
+		changes := append([]map[string]any(nil), portForward...)
+		for i := 0; i < n; i++ {
+			v := strings.Repeat("x", 60)
+			after += fmt.Sprintf("firewall.ssh_nas.extra_%02d='%s'\n", i, v)
+			changes = append(changes, map[string]any{"config": "firewall", "section": "ssh_nas", "option": fmt.Sprintf("extra_%02d", i), "value": v})
+		}
+		r.setAfter("firewall", after)
+		return r.apply(changes...)
 	}
-	r.setAfter("firewall", after)
-	out, isErr := r.apply(changes...)
-	if !isErr || !strings.Contains(out, "too long to show the owner") {
+	// What one more option adds to the card, read off two cards that are held and withdrawn, so the
+	// card below is over 3500 characters and still under the 3696 units of one Telegram message: only
+	// the rule on characters can refuse it.
+	cardOf := func(n int) int {
+		id := r.mustHold(try(n))
+		c := utf8.RuneCountInString(r.action(id).Card)
+		if out, isErr := callTool(t, r.s, "a", "action_withdraw", map[string]any{"id": id}); isErr {
+			t.Fatalf("withdraw: %s", out)
+		}
+		return c
+	}
+	c1, c2 := cardOf(1), cardOf(2)
+	n := 1 + (3600-c1)/(c2-c1)
+	out, isErr := try(n)
+	m := regexp.MustCompile(`too long to show the owner in one card \((\d+) characters`).FindStringSubmatch(out)
+	if !isErr || m == nil {
+		t.Fatalf("a card of about 3600 characters was not refused for its length: %q (error=%v)", out, isErr)
+	}
+	if got, _ := strconv.Atoi(m[1]); got <= maxCardRunes || got > maxCardUnits {
+		t.Fatalf("the card measured %s characters, not between %d and %d: the test reads the wrong rule", m[1], maxCardRunes, maxCardUnits)
+	}
+	// And a far larger one too.
+	if out, isErr := try(60); !isErr || !strings.Contains(out, "too long to show the owner") {
 		t.Fatalf("an oversized card was not refused: %q (error=%v)", out, isErr)
 	}
 	if st := r.staged(); len(st) != 0 {
 		t.Errorf("staged %q", st)
 	}
-	if l := r.list(); len(l) != 0 {
-		t.Errorf("a record was kept: %+v", l)
+	for _, a := range r.list() {
+		if a.Status == statusHeld {
+			t.Errorf("a record was kept: %+v", a)
+		}
 	}
 }
 

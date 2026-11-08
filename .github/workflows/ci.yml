@@ -39,6 +39,12 @@ jobs:
       # The mutants break the split's code and require the test named for each to go red.
       - run: ./scripts/gate-split.sh && ./scripts/gate-split-teeth.sh
       - run: python3 scripts/mutate-split.py
+      # The owner's approval past the listener (invariant 13): the only IP sockets are the
+      # listener's and the status probe's, the bot speaks to api.telegram.org over checked TLS, the
+      # approver's MCP tools are refused once the router's bot is bound, and a factor is deleted
+      # before it is read; the mutants break each and require the test named for it to go red.
+      - run: ./scripts/gate-ownbot.sh && ./scripts/gate-ownbot-teeth.sh
+      - run: python3 scripts/mutate-ownbot.py
 
       # The package is only useful if it builds for the router, so build it here
       # rather than finding out at install time on someone's only router.

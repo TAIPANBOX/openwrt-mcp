@@ -32,11 +32,14 @@ type statusReport struct {
 	Capabilities map[string]bool `json:"capabilities"`
 	// ThrottlePersisted is false while the daemon says its guess throttle is not reaching the disk
 	// (a full overlay): the counts then stand in its memory, and `failures` below can be behind.
-	ThrottlePersisted bool           `json:"throttle_persisted"`
-	Clients           []clientReport `json:"clients"`
-	Policies          []policyReport `json:"policies"`
-	Audit             []auditRow     `json:"audit"`
-	Counts            map[string]int `json:"counts"`
+	ThrottlePersisted bool `json:"throttle_persisted"`
+	// OwnerBot is the router's own bot (ownbot.go): whether it is set up, and where held changes are
+	// approved.
+	OwnerBot ownerBotStatus `json:"owner_bot"`
+	Clients  []clientReport `json:"clients"`
+	Policies []policyReport `json:"policies"`
+	Audit    []auditRow     `json:"audit"`
+	Counts   map[string]int `json:"counts"`
 }
 
 // capabilities are guarantees this binary makes, by name, so a caller can ask for the
@@ -73,6 +76,11 @@ func capabilities() map[string]bool {
 		// which holds root, does not listen on the network and serves only the listener's uid
 		// (helper.go, frontend.go, docs/privilege-split.md).
 		"listener_holds_no_root": true,
+		// Once the router's own bot is bound, the helper sends the card of a held change and reads the
+		// owner's tap and factor itself, over TLS that ends in the helper and passes the listener as
+		// bytes it has no key for; no MCP client approves, lists, rejects, unlocks or locks for an
+		// approval section any more (ownbot.go, docs/approval-path.md).
+		"owner_approves_past_the_listener": true,
 	}
 }
 
@@ -94,6 +102,9 @@ type approvalReport struct {
 	Factor   string `json:"factor"`
 	On       bool   `json:"on"`
 	Ready    bool   `json:"ready"`
+	// Channel is where this client's held changes are approved: "bot", the router's own chat, or
+	// "mcp", the approver's client.
+	Channel string `json:"channel"`
 }
 
 // mfaReport is the owner-unlock picture of one client. It holds facts and times only: never a
@@ -183,6 +194,7 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 		Running:           running,
 		Capabilities:      capabilities(),
 		ThrottlePersisted: persisted,
+		OwnerBot:          ownerBotStatusOf(statePath),
 		Counts:            map[string]int{},
 	}
 
@@ -212,9 +224,12 @@ func runStatus(configPath, statePath string, auditLines int, asJSON bool) error 
 		for _, n := range names {
 			cr := clientReport{Name: n, Policies: perClient[n], MFA: buildMFAReport(ms, cfg, n, now, false)}
 			if a := cfg.approvalFor(n); a != nil {
-				ready := a.On && contains(names, a.Approver) && cr.MFA.TOTPEnrolled &&
-					(a.Factor != factorPINTOTP || cr.MFA.PINSet)
-				cr.Approval = &approvalReport{Approver: a.Approver, Factor: a.Factor, On: a.On, Ready: ready}
+				channel, reachable := "mcp", contains(names, a.Approver)
+				if rep.OwnerBot.Bound {
+					channel, reachable = "bot", true
+				}
+				ready := a.On && reachable && cr.MFA.TOTPEnrolled && (a.Factor != factorPINTOTP || cr.MFA.PINSet)
+				cr.Approval = &approvalReport{Approver: a.Approver, Factor: a.Factor, On: a.On, Ready: ready, Channel: channel}
 			}
 			rep.Clients = append(rep.Clients, cr)
 		}
