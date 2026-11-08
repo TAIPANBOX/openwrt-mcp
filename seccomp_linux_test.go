@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -17,7 +18,7 @@ func TestBPFConstantsAreTheKernels(t *testing.T) {
 	for name, p := range map[string][2]uint32{
 		"ld": {bpfLD, unix.BPF_LD}, "w": {bpfW, unix.BPF_W}, "abs": {bpfABS, unix.BPF_ABS},
 		"jmp": {bpfJMP, unix.BPF_JMP}, "jeq": {bpfJEQ, unix.BPF_JEQ}, "k": {bpfK, unix.BPF_K},
-		"ret": {bpfRET, unix.BPF_RET}, "ja": {bpfJA, unix.BPF_JA}, "alu": {bpfALU, unix.BPF_ALU}, "and": {bpfAND, unix.BPF_AND},
+		"ret": {bpfRET, unix.BPF_RET}, "jge": {bpfJGE, unix.BPF_JGE}, "ja": {bpfJA, unix.BPF_JA}, "alu": {bpfALU, unix.BPF_ALU}, "and": {bpfAND, unix.BPF_AND},
 		"kill": {retKillProcess, unix.SECCOMP_RET_KILL_PROCESS}, "allow": {retAllow, unix.SECCOMP_RET_ALLOW},
 		"errno": {retErrnoBase, unix.SECCOMP_RET_ERRNO}, "enosys": {enosys, uint32(unix.ENOSYS)},
 		"nnp": {prSetNoNewPrivs, unix.PR_SET_NO_NEW_PRIVS}, "mode": {seccompSetModeFilter, unix.SECCOMP_SET_MODE_FILTER},
@@ -133,5 +134,35 @@ func TestFilterOnARealKernel(t *testing.T) {
 	}
 	if err := runSeccompChild(t, "clone3"); err != nil {
 		t.Errorf("clone3 was not refused with ENOSYS: %v", err)
+	}
+}
+
+// The mask the daemon insists on is the file procd is given: a change to one without the other
+// would make the daemon refuse to start, or accept a set nobody wrote down.
+func TestExpectedCapabilityMaskIsTheCapabilityFile(t *testing.T) {
+	b, err := os.ReadFile("files/etc/capabilities/openwrt-mcp.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f map[string][]string
+	if err := json.Unmarshal(b, &f); err != nil {
+		t.Fatal(err)
+	}
+	caps := map[string]uint{"CAP_CHOWN": unix.CAP_CHOWN, "CAP_DAC_OVERRIDE": unix.CAP_DAC_OVERRIDE,
+		"CAP_FOWNER": unix.CAP_FOWNER, "CAP_FSETID": unix.CAP_FSETID, "CAP_KILL": unix.CAP_KILL,
+		"CAP_SETGID": unix.CAP_SETGID, "CAP_SETUID": unix.CAP_SETUID, "CAP_NET_ADMIN": unix.CAP_NET_ADMIN,
+		"CAP_NET_RAW": unix.CAP_NET_RAW}
+	for _, set := range []string{"bounding", "effective", "permitted"} {
+		var mask uint64
+		for _, n := range f[set] {
+			bit, ok := caps[n]
+			if !ok {
+				t.Fatalf("%s names %s, which the test does not know", set, n)
+			}
+			mask |= 1 << bit
+		}
+		if mask != expectedCaps {
+			t.Errorf("%s of the file is %#x, the daemon insists on %#x", set, mask, expectedCaps)
+		}
 	}
 }

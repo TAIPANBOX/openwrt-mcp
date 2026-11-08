@@ -26,7 +26,7 @@ jobs:
       # The guess throttle's rules that can be read from the source, and the proof that the gate
       # would notice each one broken.
       - run: ./scripts/gate-throttle.sh && ./scripts/gate-throttle-teeth.sh
-      # The jail, the capability set, no_new_privs and the seccomp filter the daemon installs, and
+      # The capability set, no_new_privs and the seccomp filter the daemon installs and checks, and
       # the proof that the gate would notice each one lost. Running them on a router is
       # scripts/e2e-vlab.sh, which needs the vlab and is not a CI job.
       - run: ./scripts/gate-jail.sh && ./scripts/gate-jail-teeth.sh

@@ -1,8 +1,8 @@
 package main
 
-// The daemon under its jail, on a real OpenWrt router: every tool, through the HTTP listener, a
-// bearer token and the policy gate, as a client meets it. It runs on the router itself, as root
-// and outside the jail, against the installed daemon that procd started inside it:
+// The daemon with its narrowed kernel surface, on a real OpenWrt router: every tool, through the
+// HTTP listener, a bearer token and the policy gate, as a client meets it. It runs on the router
+// itself, as root and as a process of its own, against the installed daemon that procd started:
 //
 //	scripts/e2e-vlab.sh builds this test binary, copies it to a vlab router and runs it there.
 //
@@ -63,7 +63,7 @@ config policy 'admin'
 	list argv 'sysupgrade -h'
 	list argv 'mtd'
 	list argv 'ls /root'
-	list argv 'ls /overlay'
+	list argv 'ls -l /sbin/reboot'
 	list argv 'ls /rom'
 	list argv 'ls /dev'
 	list argv 'mount'
@@ -358,7 +358,7 @@ EOF`)
 		}
 	})
 
-	t.Run("a_program_the_daemon_starts_is_in_the_cage_too", func(t *testing.T) {
+	t.Run("a_program_the_daemon_starts_has_the_same_narrowing", func(t *testing.T) {
 		r.mustOK("admin", "mfa_unlock", map[string]any{"pin": "4821"})
 		out := r.mustOK("admin", "exec", map[string]any{"argv": []string{"cat", "/proc/self/status"}})
 		for _, want := range []string{"Seccomp:\t2", "NoNewPrivs:\t1", "CapBnd:\t00000000000030fb", "CapEff:\t00000000000030fb"} {
@@ -366,25 +366,36 @@ EOF`)
 				t.Errorf("a program started by exec lacks %q:\n%s", want, out)
 			}
 		}
-		for _, argv := range [][]string{{"mount", "-t", "tmpfs", "none", "/mnt"}} {
-			o, isErr := r.call("admin", "exec", map[string]any{"argv": argv})
-			if !isErr || !strings.Contains(o, "bad system call") {
-				t.Errorf("%v was not ended by the filter: error=%v %q", argv, isErr, o)
-			}
-		}
-		for _, p := range []string{"/root", "/overlay", "/rom"} {
-			if o, isErr := r.call("admin", "exec", map[string]any{"argv": []string{"ls", p}}); !isErr || !strings.Contains(o, "No such file") {
-				t.Errorf("%s is visible in the jail: %v %q", p, isErr, o)
-			}
+		o, isErr := r.call("admin", "exec", map[string]any{"argv": []string{"mount", "-t", "tmpfs", "none", "/mnt"}})
+		if !isErr || !strings.Contains(o, "bad system call") {
+			t.Errorf("mount was not ended by the filter: error=%v %q", isErr, o)
 		}
 	})
 
-	// What the cage takes from a granted program is written down, not asserted: it is the list in
-	// the pull request, and it is a measurement of this router's jail.
-	t.Run("report_what_a_granted_program_sees", func(t *testing.T) {
+	// There is no jail, so a program started by exec sees the router as before: its processes, with
+	// procd as pid 1, its /root, and the reboot command.
+	t.Run("exec_sees_the_router_as_before", func(t *testing.T) {
+		r.mustOK("admin", "mfa_unlock", map[string]any{"pin": "4821"})
+		ps := r.mustOK("admin", "exec", map[string]any{"argv": []string{"ps"}})
+		if !regexp.MustCompile(`(?m)^\s*1 root .*(procd|init)`).MatchString(ps) || !strings.Contains(ps, "dnsmasq") {
+			t.Errorf("ps through exec does not show the router's processes (procd as pid 1, dnsmasq):\n%.600s", ps)
+		}
+		if o, isErr := r.call("admin", "exec", map[string]any{"argv": []string{"ls", "/root"}}); isErr {
+			t.Errorf("/root is not there for a program started by exec: %q", o)
+		}
+		if o, isErr := r.call("admin", "exec", map[string]any{"argv": []string{"ls", "-l", "/sbin/reboot"}}); isErr || !strings.Contains(o, "reboot") {
+			t.Errorf("the reboot command is not there: %q", o)
+		}
+		if out, isErr := r.call("admin", "exec", map[string]any{"argv": []string{"sysupgrade", "-b", "/tmp/jail-e2e-backup.tgz"}}); isErr {
+			t.Errorf("sysupgrade -b through exec: %q", out)
+		}
+	})
+
+	// What a granted program meets is written down, not asserted: a measurement of this router.
+	t.Run("report_what_a_granted_program_meets", func(t *testing.T) {
 		r.mustOK("admin", "mfa_unlock", map[string]any{"pin": "4821"})
 		for _, argv := range [][]string{{"ps"}, {"sysupgrade", "-b", "/tmp/jail-e2e-backup.tgz"}, {"mtd"},
-			{"ls", "/root"}, {"ls", "/overlay"}, {"ls", "/dev"}, {"mount"}, {"firstboot"},
+			{"ls", "/root"}, {"ls", "/dev"}, {"mount"}, {"firstboot"},
 			{"insmod", "/nonexistent.ko"}} {
 			out, isErr := r.call("admin", "exec", map[string]any{"argv": argv, "timeout": 20})
 			fmt.Printf("PROBE %-40s error=%-5v %.110q\n", strings.Join(argv, " "), isErr, out)

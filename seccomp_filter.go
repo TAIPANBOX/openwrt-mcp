@@ -13,7 +13,8 @@ package main
 //
 // The program:
 //   - a call made with another audit architecture is killed (SECCOMP_RET_KILL_PROCESS), so the
-//     32-bit entry of an x86_64 kernel is no way round the list;
+//     32-bit entry of an x86_64 kernel is no way round the list, and so is any number with bit 30
+//     set, the x32 ABI's;
 //   - clone3 answers ENOSYS: its flags are in memory the filter cannot read, and libc, Go and
 //     busybox all fall back to clone, whose flags it can read;
 //   - clone with any namespace flag is killed: a new user namespace needs no capability and would
@@ -25,7 +26,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -42,6 +45,7 @@ const (
 	bpfJMP = 0x05
 	bpfJEQ = 0x10
 	bpfJA  = 0x00
+	bpfJGE = 0x30
 	bpfALU = 0x04
 	bpfAND = 0x50
 	bpfK   = 0x00
@@ -84,6 +88,15 @@ func confine() {
 	case err != nil:
 		log.Fatalf("openwrt-mcp: seccomp: %v", err)
 	default:
+		if capabilitiesRequired(os.Geteuid()) {
+			status, rerr := os.ReadFile("/proc/self/status")
+			if rerr == nil {
+				rerr = checkCapabilities(status, expectedCaps)
+			}
+			if rerr != nil {
+				log.Fatalf("openwrt-mcp: capabilities: %v", rerr)
+			}
+		}
 		log.Printf("openwrt-mcp: seccomp filter on: %d system calls denied, clone3 refused, namespace clones killed", n)
 	}
 }
@@ -147,12 +160,12 @@ func buildFilter(arch, nrClone, nrClone3 uint32, denied []uint32) ([]Insn, error
 			return nil, errors.New("filter: clone and clone3 have their own rules and are not listed")
 		}
 	}
-	// Layout: 4 header instructions, 2 + len(denied) tests, one jump to the allow, then the tails,
+	// Layout: 4 header instructions, the x32 test, 2 + len(denied) tests, one jump to the allow, then the tails,
 	// every jump forward: the clone check (3), ret ERRNO, ret KILL, ret ALLOW. The jump matters: a
 	// call no test matched must not fall into the clone check, which reads the first argument as
 	// flags (openat's is a directory descriptor).
 	tests := 2 + len(denied)
-	cloneChk := 4 + tests + 1
+	cloneChk := 4 + 1 + tests + 1
 	errno := cloneChk + 3
 	kill := errno + 1
 	allow := kill + 1
@@ -163,6 +176,11 @@ func buildFilter(arch, nrClone, nrClone3 uint32, denied []uint32) ([]Insn, error
 		{Code: bpfRET | bpfK, K: retKillProcess},
 		{Code: bpfLD | bpfW | bpfABS, K: offNr},
 	}
+	// x32: on x86_64 a call whose number has bit 30 set is the x32 ABI's. The kernel clears the bit
+	// before it looks the call up, but the tests below compare whole numbers, so every denied
+	// call and every clone into a namespace would pass in that form. Kill them all, as libseccomp
+	// and Docker's profile do.
+	prog = append(prog, Insn{Code: bpfJMP | bpfJGE | bpfK, Jt: jump(len(prog), kill), K: 0x40000000})
 	prog = append(prog, Insn{Code: bpfJMP | bpfJEQ | bpfK, Jt: jump(len(prog), errno), K: nrClone3})
 	prog = append(prog, Insn{Code: bpfJMP | bpfJEQ | bpfK, Jt: jump(len(prog), cloneChk), K: nrClone})
 	for _, nr := range denied {
@@ -205,6 +223,40 @@ func checkSeccompStatus(status []byte) error {
 	}
 	if nnp != "1" || mode != "2" {
 		return fmt.Errorf("the kernel shows NoNewPrivs=%q Seccomp=%q, not 1 and 2: the filter is not in force", nnp, mode)
+	}
+	return nil
+}
+
+// expectedCaps is the mask of the nine capabilities of /etc/capabilities/openwrt-mcp.json.
+const expectedCaps uint64 = 0x30fb
+
+// capabilitiesRequired says whether serve insists on the capability sets: it does for root, which
+// is what the init script starts and what the cap-drop is for. A daemon that is not root, as in the
+// tests that run the real binary, holds no capability to narrow and cannot write /etc/config.
+func capabilitiesRequired(euid int) bool { return euid == 0 }
+
+// checkCapabilities reads the text of /proc/self/status and requires the bounding and the effective
+// set to be exactly want. Without it a router where procd did not apply the capability file (no
+// ujail, an old procd) would run the daemon with every capability and nothing would say so.
+func checkCapabilities(status []byte, want uint64) error {
+	got := map[string]string{}
+	for _, line := range strings.Split(string(status), "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok && (k == "CapBnd" || k == "CapEff") {
+			got[k] = strings.TrimSpace(v)
+		}
+	}
+	for _, k := range []string{"CapBnd", "CapEff"} {
+		v, ok := got[k]
+		if !ok {
+			return fmt.Errorf("/proc/self/status does not show %s", k)
+		}
+		n, err := strconv.ParseUint(v, 16, 64)
+		if err != nil {
+			return fmt.Errorf("%s %q is not a capability mask: %w", k, v, err)
+		}
+		if n != want {
+			return fmt.Errorf("%s is %016x, not %016x: procd did not apply /etc/capabilities/openwrt-mcp.json", k, n, want)
+		}
 	}
 	return nil
 }

@@ -84,22 +84,24 @@ before the 2026-10-17 security wave, so the numbering starts here.
     (gate: `scripts/gate-apk-parity.sh` `check_upgrade_restarts`, `check_upgrade_keeps_boot_start`;
     teeth: CI's apk job)
 
-11. **The daemon runs in a procd jail, with no_new_privs, a named capability set and its own seccomp
-    filter, and a program it starts inherits all of them.** The jail has only the directories the
-    daemon's jobs use (never `/root`, `/overlay`, `/mnt`, `/rom`, `/boot`, `/`); the capability file
-    names all five lists and holds no `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`, `CAP_SYS_RAWIO`,
-    `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME` or `CAP_MKNOD`; `serve` installs the filter
-    before it reads the configuration and refuses to listen unless `/proc/self/status` shows it;
-    procd's own seccomp profile is never set, because it filters nothing for a static binary. The
-    daemon stays root on purpose (it commits `/etc/config` and `apk_add` writes anywhere); the split
-    of parsing from acting is the second step of G3.14 and is not done.
+11. **The daemon runs with no_new_privs, a named capability set and its own seccomp filter, a
+    program it starts inherits all three, and the daemon does not listen unless the kernel shows
+    them.** The capability file names all five lists and holds no `CAP_SYS_ADMIN`, `CAP_SYS_MODULE`,
+    `CAP_SYS_RAWIO`, `CAP_SYS_PTRACE`, `CAP_SYS_BOOT`, `CAP_SYS_TIME` or `CAP_MKNOD`; procd gets it
+    through a bare `procd_add_jail`, with no mount, no namespace and no `requirejail`; `serve`
+    installs the filter (x32 numbers killed) before it reads the configuration, and refuses to
+    listen unless `/proc/self/status` shows `NoNewPrivs 1`, `Seccomp 2` and `CapBnd` and `CapEff`
+    equal to the file's mask; procd's own seccomp profile is never set, because it filters nothing
+    for a static binary. This narrows the kernel surface and does not contain a broken daemon: it is
+    root with the whole of ubus and a writable `/etc`, which only the second step of G3.14 (the split
+    of parsing from acting) closes. `@decided 2026-11-08`: a light cage now, no jail.
     (gate: `scripts/gate-jail.sh`, teeth: `scripts/gate-jail-teeth.sh`; test:
-    `features/service-jail.feature`, every scenario bound; on a router: `scripts/e2e-vlab.sh`,
+    `features/service-narrowing.feature`, every scenario bound; on a router: `scripts/e2e-vlab.sh`,
     `TestJailVlab`, needs a vlab)
 
 Each invariant is restated as scenarios in `features/`: `exec-argument-grants.feature`,
 `ubus-call-grants.feature`, `audit-keeps-secrets-out.feature`, `wireguard-key-off-argv.feature`,
-`second-factor-throttle.feature` and `service-jail.feature`.
+`second-factor-throttle.feature` and `service-narrowing.feature`.
 Every scenario is bound to a named test, and `scripts/gate-scenarios-bound.sh` checks the binding
 both ways and runs the tests.
 
@@ -123,7 +125,7 @@ python3 scripts/mutate-held.py
 ```
 
 `scripts/gate-apk-parity.sh` needs docker and runs in CI's `apk` job only. `scripts/e2e-vlab.sh` needs the
-vlab on forge and is run there by hand: it runs every tool against the jailed daemon on a virtual router.
+vlab on forge and is run there by hand: it runs every tool against the daemon on a virtual router.
 
 ## Rules for a change
 

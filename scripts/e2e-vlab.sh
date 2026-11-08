@@ -1,16 +1,16 @@
 #!/bin/sh
 # e2e-vlab.sh -- every tool of the daemon, through its HTTP listener, against the installed daemon
-# that procd started in its jail, on a virtual OpenWrt router (vlab, QEMU/KVM, an isolated bridge).
+# that procd started with its narrowed capabilities and filter, on a virtual OpenWrt router (vlab, QEMU/KVM, an isolated bridge).
 # Run it on the machine that has the lab (forge), from a copy of the tree there. Not on a laptop.
 #
 #   scripts/e2e-vlab.sh            the init script, capability file and daemon of this tree
-#   scripts/e2e-vlab.sh --old      the same daemon under the init script of origin/main (no jail,
-#                                  no capability limit): jail_vlab_test.go must go red on it
+#   scripts/e2e-vlab.sh --old      the same daemon under the init script of origin/main (no
+#                                  capability file): jail_vlab_test.go must go red on it
 #
 # It needs: go, python3, `sudo -n` for the vlab binary, and the vlab image. It brings one router up
 # on 10.34.0.0/24 with a route to the internet (apk_add reaches the official feeds), installs the
 # package files by the same copy `make install` makes, runs TestJailVlab on the router, prints what
-# the kernel shows for the daemon and for a program it started, and takes the lab down.
+# the kernel shows for the daemon, and takes the lab down.
 set -eu
 
 REPO=${E2E_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -36,7 +36,7 @@ fi
 cat > "$WORK/topology.json" <<'JSON'
 {
   "name": "mcpjail",
-  "note": "openwrt-mcp under its jail: one router with internet for apk",
+  "note": "openwrt-mcp with its narrowed kernel surface: one router with internet for apk",
   "segments": [ {"name": "net", "cidr": "10.34.0.0/24", "internet": true} ],
   "nodes": [ {"name": "r1", "wan": "net", "mem_mb": 384} ]
 }

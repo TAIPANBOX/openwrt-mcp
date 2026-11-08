@@ -1,8 +1,13 @@
 #!/bin/sh
 # gate-jail.sh -- CI gate enforcing this invariant:
 #
-#   "The daemon runs in a procd jail, with no_new_privs and a named capability set that leaves out
-#   everything its jobs do not use, and installs its own seccomp filter before it reads anything."
+#   "The daemon runs with no_new_privs, a named capability set that leaves out everything its jobs
+#   do not use, and its own seccomp filter, and does not listen unless the kernel shows all three."
+#
+# This narrows the kernel surface; it is not a jail and not containment of a broken daemon, which is
+# root with the whole of ubus and a writable /etc. The init script says so, and the gate holds it to
+# it: no mount and no namespace is asked of ujail, because those would cost every program started by
+# `exec` its view of the router (ps, kill, reboot, sysupgrade -b) for almost nothing in return.
 #
 # What it reads is the source of what ships: the init script, the capability file, main.go, the
 # seccomp list and the packaging. It does not start a router; scripts/e2e-vlab.sh does, and shows
@@ -10,13 +15,13 @@
 # true of a file that is never installed, so the packaging is one of the checks.
 #
 #   gate-jail.sh                run every check
-#   gate-jail.sh <check>        run one (features/service-jail.feature binds a test to each)
+#   gate-jail.sh <check>        run one (features/service-narrowing.feature binds a test to each)
 #   gate-jail.sh --selftest     list the checks, run nothing
 #
 # JAIL_ROOT points it at another tree, which is how scripts/gate-jail-teeth.sh plants its faults.
 set -u
 
-CHECKS='check_jail_is_requested check_no_new_privs check_capability_set check_mounts check_seccomp_is_in_the_daemon check_packages_ship_the_capability_file'
+CHECKS='check_ujail_carries_the_capabilities check_no_new_privs check_capability_set check_no_namespaces_and_no_mounts check_seccomp_is_in_the_daemon check_packages_ship_the_capability_file'
 
 if [ "${1:-}" = "--selftest" ]; then
 	for c in $CHECKS; do echo "$c"; done
@@ -32,11 +37,14 @@ need() { [ -f "$1" ] || { echo "FAIL measured nothing: $1 is not there"; exit 1;
 # live prints the init script without comment lines: a word in a comment is not a command.
 live() { sed -e 's/^[[:space:]]*//' -e '/^#/d' "$INIT"; }
 
-check_jail_is_requested() {
+# procd applies a capability file only through ujail (measured on OpenWrt 25.12.5: without a jail
+# section the daemon runs with CapBnd 000001ffffffffff). A bare `procd_add_jail openwrt-mcp` makes
+# procd run `ujail -C <file> -c -- daemon`, which drops capabilities and builds no jail.
+check_ujail_carries_the_capabilities() {
 	need "$INIT"
-	live | grep -E '^procd_add_jail[[:space:]]+openwrt-mcp([[:space:]]|$)' | grep -qw requirejail ||
-		fail check_jail_is_requested "no 'procd_add_jail openwrt-mcp ... requirejail' in the init script: the daemon would run outside a jail, or fall out of it silently" || return 1
-	echo "ok   check_jail_is_requested"
+	live | grep -qE '^procd_add_jail[[:space:]]+openwrt-mcp[[:space:]]*$' ||
+		fail check_ujail_carries_the_capabilities "no bare 'procd_add_jail openwrt-mcp' in the init script: procd would not apply the capability file" || return 1
+	echo "ok   check_ujail_carries_the_capabilities"
 }
 
 check_no_new_privs() {
@@ -84,26 +92,22 @@ PY
 	echo "ok   check_capability_set"
 }
 
-# The jail is made of the directories the daemon's jobs use. These are never mounted: /root,
-# /overlay, /mnt, /rom and /boot hold what the jobs do not touch, /dev and /sys are provided by
-# ujail's own flags, and "/" would be no jail at all.
-check_mounts() {
+# No mount and no namespace: a jail would hide /root and /overlay and the router's process table
+# from the daemon and take ps, kill, reboot, sysupgrade -b, firstboot and mtd from every program
+# `exec` starts, and would not hold a daemon that is root with ubus and a writable /etc.
+check_no_namespaces_and_no_mounts() {
 	need "$INIT"
-	mounts=$(live | sed -n -e 's/^procd_add_jail_mount_rw[[:space:]]*//p' -e 's/^procd_add_jail_mount[[:space:]]*//p' | tr ' ' '\n' | sed '/^$/d')
-	[ -n "$mounts" ] || fail check_mounts "the jail mounts nothing: the daemon would find no uci, ubus or /etc/config" || return 1
-	for m in $mounts; do
-		case "$m" in
-		/ | /root* | /overlay* | /mnt* | /rom* | /boot* | /dev* | /sys* | /proc* | /home* | /opt* | /run*)
-			fail check_mounts "the jail mounts $m, which the daemon never reads or writes"; return 1 ;;
-		/etc | /usr | /lib | /bin | /sbin | /www | /tmp | /var/run | /var/lock | /var/log | /var/state) ;;
-		*) fail check_mounts "the jail mounts $m, which is not on the list of what the daemon's jobs use (/etc /usr /lib /bin /sbin /www /tmp and /var/{run,lock,log,state})"; return 1 ;;
-		esac
-	done
-	echo "ok   check_mounts"
+	if live | grep -qE '^procd_add_jail_mount'; then
+		fail check_no_namespaces_and_no_mounts "the init script mounts into a jail: every program started by exec would lose the router's file system view"; return 1
+	fi
+	if live | grep -E '^procd_add_jail[[:space:]]' | grep -qE '[[:space:]](log|ubus|udebug|procfs|sysfs|ronly|requirejail|netns|userns|cgroupsns)([[:space:]]|$)'; then
+		fail check_no_namespaces_and_no_mounts "the jail line asks ujail for a namespace, a mount or a socket"; return 1
+	fi
+	echo "ok   check_no_namespaces_and_no_mounts"
 }
 
 check_seccomp_is_in_the_daemon() {
-	need "$INIT"; need "$ROOT/main.go"; need "$ROOT/seccomp/denied.txt"; need "$ROOT/seccomp_linux.go"
+	need "$INIT"; need "$ROOT/main.go"; need "$ROOT/seccomp/denied.txt"; need "$ROOT/seccomp_linux.go"; need "$ROOT/seccomp_filter.go"
 	# procd's own profile filters nothing for a static binary and lands on the programs it starts.
 	if live | grep -qE 'procd_set_param[[:space:]]+seccomp'; then
 		fail check_seccomp_is_in_the_daemon "the init script sets a procd seccomp profile, which a static binary never loads"; return 1
@@ -117,6 +121,11 @@ check_seccomp_is_in_the_daemon() {
 	done
 	grep -q 'seccompFilterFlagTSYNC' "$ROOT/seccomp_linux.go" && grep -q 'checkSeccompStatus' "$ROOT/seccomp_linux.go" ||
 		fail check_seccomp_is_in_the_daemon "the filter is not put on every thread, or the daemon does not check /proc/self/status afterwards" || return 1
+	# The x32 numbers are killed, and the daemon refuses to listen unless the capability sets are the file's.
+	grep -q 'bpfJGE' "$ROOT/seccomp_filter.go" && grep -q '0x40000000' "$ROOT/seccomp_filter.go" ||
+		fail check_seccomp_is_in_the_daemon "the filter does not kill the x32 numbers (bit 30), which skip every comparison by whole number" || return 1
+	grep -q 'checkCapabilities(status, expectedCaps)' "$ROOT/seccomp_filter.go" ||
+		fail check_seccomp_is_in_the_daemon "the daemon does not check CapBnd and CapEff before it listens" || return 1
 	echo "ok   check_seccomp_is_in_the_daemon"
 }
 

@@ -28,6 +28,12 @@ func runFilter(t *testing.T, prog []Insn, arch, nr, arg0 uint32) uint32 {
 			a &= in.K
 		case bpfJMP | bpfJA:
 			pc += int(in.K)
+		case bpfJMP | bpfJGE | bpfK:
+			if a >= in.K {
+				pc += int(in.Jt)
+			} else {
+				pc += int(in.Jf)
+			}
 		case bpfJMP | bpfJEQ | bpfK:
 			if a == in.K {
 				pc += int(in.Jt)
@@ -79,8 +85,6 @@ func TestFilterKillsAnotherArchitecturesCalls(t *testing.T) {
 	if got := runFilter(t, prog, 0x40000003, 1, 0); got != retKillProcess {
 		t.Errorf("a 32-bit call: %#x, want kill", got)
 	}
-	// The x32 bit on an allowed number is a different number, and no test of the program matches it
-	// as a deny: the arch word is what stops it, and it is the same word. Documented, not claimed.
 }
 
 func TestFilterRefusesClone3AndNamespaceClones(t *testing.T) {
@@ -112,6 +116,30 @@ func TestFilterRefusesClone3AndNamespaceClones(t *testing.T) {
 		}
 		if got := runFilter(t, prog, tArch, tClone, threadFlag|f); got != retKillProcess {
 			t.Errorf("thread clone into a new %s namespace: %#x, want kill", name, got)
+		}
+	}
+}
+
+// On x86_64 a call made with bit 30 set in its number is the x32 ABI's: the kernel takes the number
+// with the bit cleared, and a program that compares whole numbers never matches it. Every such
+// number is killed, the denied ones and the clone into a user namespace included.
+func TestFilterKillsEveryX32Number(t *testing.T) {
+	prog, _ := buildFilter(tArch, tClone, tClone3, tDenied)
+	const x32 = 0x40000000
+	for _, nr := range tDenied {
+		if got := runFilter(t, prog, tArch, nr|x32, 0); got != retKillProcess {
+			t.Errorf("x32 call %d: %#x, want kill", nr, got)
+		}
+	}
+	if got := runFilter(t, prog, tArch, tClone|x32, 0x10000000|17); got != retKillProcess {
+		t.Errorf("x32 clone into a user namespace: %#x, want kill", got)
+	}
+	if got := runFilter(t, prog, tArch, tClone|x32, 17); got != retKillProcess {
+		t.Errorf("x32 clone: %#x, want kill", got)
+	}
+	for _, nr := range []uint32{0, 1, 59, 257} {
+		if got := runFilter(t, prog, tArch, nr|x32, 0); got != retKillProcess {
+			t.Errorf("x32 form of the allowed call %d: %#x, want kill", nr, got)
 		}
 	}
 }
@@ -169,6 +197,39 @@ func TestSeccompStatusMustShowTheFilterInForce(t *testing.T) {
 	} {
 		if err := checkSeccompStatus([]byte(tc.status)); (err == nil) != tc.ok {
 			t.Errorf("%s: err=%v, want ok=%v", name, err, tc.ok)
+		}
+	}
+}
+
+const capsStatusOK = "Name:\tx\nCapInh:\t0000000000000000\nCapPrm:\t00000000000030fb\nCapEff:\t00000000000030fb\nCapBnd:\t00000000000030fb\nCapAmb:\t0000000000000000\n"
+
+func TestDaemonRefusesToListenUnlessProcdAppliedTheCapabilities(t *testing.T) {
+	if err := checkCapabilities([]byte(capsStatusOK), expectedCaps); err != nil {
+		t.Fatalf("the expected sets were refused: %v", err)
+	}
+	for name, status := range map[string]string{
+		"full bounding set (procd did not apply the file)": "CapBnd:\t000001ffffffffff\nCapEff:\t00000000000030fb\n",
+		"full effective set":      "CapBnd:\t00000000000030fb\nCapEff:\t000001ffffffffff\n",
+		"effective set one short": "CapBnd:\t00000000000030fb\nCapEff:\t00000000000010fb\n",
+		"bounding set one more":   "CapBnd:\t00000000000032fb\nCapEff:\t00000000000030fb\n",
+		"bounding set not shown":  "CapEff:\t00000000000030fb\n",
+		"effective set not shown": "CapBnd:\t00000000000030fb\n",
+		"unreadable":              "",
+		"not hex":                 "CapBnd:\tzz\nCapEff:\t00000000000030fb\n",
+	} {
+		if err := checkCapabilities([]byte(status), expectedCaps); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestCapabilitySetsAreRequiredOfRootAndOnlyOfRoot(t *testing.T) {
+	if !capabilitiesRequired(0) {
+		t.Error("root is not held to the capability sets")
+	}
+	for _, euid := range []int{1, 100, 65534} {
+		if capabilitiesRequired(euid) {
+			t.Errorf("uid %d is held to the capability sets, so serve cannot run unprivileged", euid)
 		}
 	}
 }
