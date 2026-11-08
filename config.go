@@ -739,26 +739,50 @@ func (ts *TokenStore) Mint(client string) (string, error) {
 	}
 	raw := base64.RawURLEncoding.EncodeToString(buf)
 	sum := sha256.Sum256([]byte(raw))
-	ts.mu.Lock()
-	ts.byHash[hex.EncodeToString(sum[:])] = client
-	ts.mu.Unlock()
-	return raw, ts.save()
+	_, err := ts.update(func(m map[string]string) int {
+		m[hex.EncodeToString(sum[:])] = client
+		return 1
+	})
+	return raw, err
 }
 
 func (ts *TokenStore) Revoke(client string) int {
-	ts.mu.Lock()
-	n := 0
-	for h, c := range ts.byHash {
-		if c == client {
-			delete(ts.byHash, h)
-			n++
+	n, _ := ts.update(func(m map[string]string) int {
+		n := 0
+		for h, c := range m {
+			if c == client {
+				delete(m, h)
+				n++
+			}
 		}
-	}
-	ts.mu.Unlock()
-	if n > 0 {
-		_ = ts.save()
-	}
+		return n
+	})
 	return n
+}
+
+// update changes the file under a lock, from what the file holds at that moment: `pair` and `unpair`
+// on the router and the helper (which revokes the owner's MCP client when the router's own bot is
+// bound, ownbot.go) write it, and a writer that saved what it loaded earlier would undo another's
+// change. fn returns how many entries it changed; nothing is written for none.
+func (ts *TokenStore) update(fn func(map[string]string) int) (int, error) {
+	if err := os.MkdirAll(path.Dir(ts.path), 0o700); err != nil {
+		return 0, err
+	}
+	unlock, err := lockFile(ts.path + ".lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	if err := ts.reload(); err != nil {
+		return 0, err
+	}
+	ts.mu.Lock()
+	n := fn(ts.byHash)
+	ts.mu.Unlock()
+	if n == 0 {
+		return 0, nil
+	}
+	return n, ts.save()
 }
 
 func (ts *TokenStore) Clients() []string {

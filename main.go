@@ -45,6 +45,7 @@ func main() {
 	configPath := flag.String("config", defaultConfigPath, "path to the UCI config file")
 	statePath := flag.String("state", defaultStatePath, "directory for tokens, audit log and pending state")
 	socketPath := flag.String("socket", defaultHelperSocket, "the helper's Unix socket, between the two parts of the daemon")
+	relayPath := flag.String("relay", defaultRelaySocket, "the listener's pipe to Telegram, for the router's own bot")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -62,6 +63,7 @@ func main() {
 		hc := &helperClient{path: *socketPath}
 		listen, err := hc.listen(30 * time.Second)
 		must(err)
+		startRelay(*relayPath)
 		must(newFrontend(hc).Serve(listen))
 
 	case "helper":
@@ -75,7 +77,7 @@ func main() {
 			s.housekeep(stop, time.NewTicker(time.Minute).C)
 			os.Exit(0)
 		}()
-		must(runHelper(s, *socketPath))
+		must(runHelper(s, *socketPath, *relayPath))
 
 	case "pair":
 		if len(args) != 2 {
@@ -171,6 +173,10 @@ func main() {
 		}
 		must(runPIN(os.Stdout, os.Stdin, *statePath, args[1:]))
 
+	case "owner-bot":
+		// The router's own bot (ownbot.go): its token is read from stdin, never from argv.
+		must(runOwnerBot(os.Stdout, os.Stdin, *statePath, args[1:]))
+
 	case "status":
 		// Backs the router's own web UI via the oui-httpd RPC module; --json is the
 		// machine-readable form of exactly what the text output shows.
@@ -254,6 +260,7 @@ func usage() {
            activate <client> <code> | status                      (--pending enrols into mfa.pending)
            reset <client>                                         clear a client's failed tries
   pin      set <client> | clear <client>      owner PIN as a second factor (set reads stdin)
+  owner-bot set | bind | status | clear       the router's own bot, where the owner approves (set reads stdin)
   version
 
 Reach it from a workstation with:

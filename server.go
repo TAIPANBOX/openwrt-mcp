@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,9 @@ type Server struct {
 	cfgTime time.Time
 	pending map[string]*pendingApply
 	held    *heldStore // changes waiting for the owner's approval (approval.go)
+	// bot is the router's own bot (ownbot.go), once the helper started it; nil in a Server that is not
+	// the daemon's helper.
+	bot atomic.Pointer[ownerBot]
 }
 
 // cfg returns the current policy set, re-reading the config file when it has changed on

@@ -597,6 +597,9 @@ var toolSpecs = []toolSpec{
 		scoped(noScope[mfaLockIn]),
 		func(ctx context.Context, s *Server, client string, in mfaLockIn) (string, string, error) {
 			if in.Client != "" && in.Client != client {
+				if err := s.mcpApproverRefusal(); err != nil {
+					return "", "mfa_lock", err
+				}
 				if !s.cfg().approves(client, in.Client) {
 					return "", "mfa_lock", &refusedError{"refused: only the owner's client of " + in.Client + " closes its window"}
 				}
@@ -636,7 +639,8 @@ var toolSpecs = []toolSpec{
 
 	toolOf("action_list",
 		"For the owner's client only: the held changes of the clients it approves, each with its card and "+
-			"hash, and the guess throttle of those clients (failures, limit, locked_out_until, refused, persisted).",
+			"hash, and the guess throttle of those clients (failures, limit, locked_out_until, refused, persisted). "+
+			"Refused on a router whose own bot is bound: the owner approves in the router's chat there.",
 		scoped(noScope[actionStatusIn]),
 		func(ctx context.Context, s *Server, client string, in actionStatusIn) (string, string, error) {
 			return s.actionList(client)
@@ -645,14 +649,15 @@ var toolSpecs = []toolSpec{
 	toolOf("action_approve",
 		"For the owner's client only: approve one held change by its id and the hash of its card, with the "+
 			"owner's PIN and a current code. The change runs once, exactly as held; an approval never opens "+
-			"the unlock window.",
+			"the unlock window. Refused on a router whose own bot is bound: the owner approves in the router's chat there.",
 		scoped(noScope[actionApproveIn]),
 		func(ctx context.Context, s *Server, client string, in actionApproveIn) (string, string, error) {
 			return s.actionApprove(ctx, client, in)
 		}),
 
 	toolOf("action_reject",
-		"For the owner's client only: reject one held change. Takes no factor.",
+		"For the owner's client only: reject one held change. Takes no factor. Refused on a router whose own "+
+			"bot is bound.",
 		scoped(noScope[actionIDIn]),
 		func(ctx context.Context, s *Server, client string, in actionIDIn) (string, string, error) {
 			return s.actionReject(client, in.ID)
@@ -791,6 +796,9 @@ var ungated = map[string]bool{"ubus_list": true, "mfa_unlock": true, "mfa_lock":
 // does, so the agent cannot spend the owner's tries on guesses.
 func (s *Server) unlockTarget(caller, named string) (string, error) {
 	if named != "" && named != caller {
+		if err := s.mcpApproverRefusal(); err != nil {
+			return "", &unlockRefusal{err.(*refusedError), caller}
+		}
 		if !s.cfg().approves(caller, named) {
 			return "", &unlockRefusal{&refusedError{"refused: only the owner's client of " + named + " opens its window"}, caller}
 		}

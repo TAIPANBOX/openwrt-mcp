@@ -34,6 +34,11 @@ import (
 // The approver's client is a separate client of this daemon (hermes-openwrt pairs it and gives
 // its token only to the plugin that carries the owner's messages), so the agent's own token, which
 // its terminal can reach, can neither approve nor spend the owner's tries.
+//
+// @decided 2026-11-08 (paraphrased, docs/approval-path.md): once the router's own bot is bound
+// (ownbot.go), the helper sends the card and reads the owner's answer itself, through that bot, and
+// the approver's MCP client approves nothing: no card, tap or factor of the owner's passes the
+// listener. approveHeld is the one order of checks both paths run.
 
 // Approval is one client's approval section.
 type Approval struct {
@@ -174,11 +179,14 @@ func (s *Server) approvalReady(a *Approval) string {
 	if !a.On {
 		return "approval is switched off on this router"
 	}
-	// Pairing is a CLI run beside the daemon (hermes-openwrt pairs the approver at its service's
-	// start), so the token file is read again when it has changed.
-	s.tokens.reloadIfChanged()
-	if !contains(s.tokens.Clients(), a.Approver) {
-		return "the owner's client " + a.Approver + " is not paired, so nobody can approve it"
+	// Once the router's own bot is bound, its chat approves, and no MCP client is asked for.
+	if !s.ownerBotChannel() {
+		// Pairing is a CLI run beside the daemon (hermes-openwrt pairs the approver at its service's
+		// start), so the token file is read again when it has changed.
+		s.tokens.reloadIfChanged()
+		if !contains(s.tokens.Clients(), a.Approver) {
+			return "the owner's client " + a.Approver + " is not paired, so nobody can approve it"
+		}
 	}
 	if a.Factor == factorPINTOTP && !s.mfa.PINSet(a.Client) {
 		return "no PIN is set for " + a.Client + ", and approving takes the PIN and a code"
@@ -391,6 +399,7 @@ func (s *Server) hold(client, tool string, input any, scopes, argv []string, cl 
 	}
 	st.byID[h.ID] = h
 	st.proposed[client] = append(st.proposed[client], now)
+	s.notifyBot()
 	return h, ""
 }
 
@@ -541,6 +550,9 @@ func (s *Server) actionWithdraw(client, id string) (string, string, error) {
 }
 
 func (s *Server) actionList(caller string) (string, string, error) {
+	if err := s.mcpApproverRefusal(); err != nil {
+		return "", "action_list", err
+	}
 	clients := s.cfg().approvedBy(caller)
 	if len(clients) == 0 {
 		return "", "action_list", &refusedError{"refused: " + caller + " approves no client's changes"}
@@ -549,19 +561,43 @@ func (s *Server) actionList(caller string) (string, string, error) {
 	return ownerActionsJSON(s.views(clients, true, now), s.throttleViews(clients, now)), "action_list", nil
 }
 
-// decidable is the record the caller may decide on, or why there is none. Callers hold s.held.mu.
-func (s *Server) decidable(caller, id string, now time.Time) (*heldAction, error) {
+// approverRef is who decides on a held change: an MCP client, the approver its section names, or,
+// with client empty, the router's own chat (ownbot.go), which decides for every section once bound.
+type approverRef struct{ client string }
+
+func (r approverRef) viaBot() bool { return r.client == "" }
+
+func (r approverRef) String() string {
+	if r.viaBot() {
+		return "the router's chat"
+	}
+	return r.client
+}
+
+// mayDecide says whether by decides on client's held changes.
+func (s *Server) mayDecide(by approverRef, client string) bool {
+	if by.viaBot() {
+		return s.cfg().approvalFor(client) != nil && s.ownerBotChannel()
+	}
+	return s.cfg().approves(by.client, client)
+}
+
+// decidable is the record by may decide on, or why there is none. Callers hold s.held.mu.
+func (s *Server) decidable(by approverRef, id string, now time.Time) (*heldAction, error) {
 	st := s.held
 	st.sweepLocked(now)
 	h := st.byID[strings.TrimSpace(id)]
 	if h == nil {
-		if len(s.cfg().approvedBy(caller)) == 0 {
+		if !by.viaBot() && len(s.cfg().approvedBy(by.client)) == 0 {
 			return nil, &refusedError{"refused: only the owner's client approves or rejects a held change, and " +
-				caller + " approves no client's changes"}
+				by.client + " approves no client's changes"}
 		}
 		return nil, &refusedError{fmt.Sprintf("refused: no held change %q (a restart drops every one)", id)}
 	}
-	if !s.cfg().approves(caller, h.Client) {
+	if !s.mayDecide(by, h.Client) {
+		if by.viaBot() {
+			return nil, &refusedError{"refused: the router's chat does not decide " + h.Client + "'s changes"}
+		}
 		return nil, &refusedError{"refused: only the owner's client of " + h.Client + " approves or rejects its changes"}
 	}
 	switch h.Status {
@@ -574,16 +610,51 @@ func (s *Server) decidable(caller, id string, now time.Time) (*heldAction, error
 }
 
 func (s *Server) actionReject(caller, id string) (string, string, error) {
+	if err := s.mcpApproverRefusal(); err != nil {
+		return "", "action_reject", err
+	}
+	return s.rejectHeld(approverRef{client: caller}, id)
+}
+
+// rejectHeld rejects one held change for by. It takes no factor.
+func (s *Server) rejectHeld(by approverRef, id string) (string, string, error) {
 	st := s.held
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	now := time.Now()
-	h, err := s.decidable(caller, id, now)
+	h, err := s.decidable(by, id, now)
 	if err != nil {
+		st.mu.Unlock()
 		return "", "action_reject", err
 	}
 	s.rejectLocked(h, now)
-	return "Rejected: " + h.ID + " will not be applied.", "rejected " + h.ID + " of " + h.Client, nil
+	st.mu.Unlock()
+	summary := "rejected " + h.ID + " of " + h.Client
+	if by.viaBot() {
+		s.audit.Record(AuditEvent{Time: nowISO(), Client: h.Client, Tool: h.Tool, Scope: strings.Join(h.Scopes, " "),
+			Outcome: OutcomeOK, Summary: summary + " in the router's chat"})
+	}
+	return "Rejected: " + h.ID + " will not be applied.", summary, nil
+}
+
+// heldView is one record as the owner reads it.
+func (s *Server) heldView(id string) (actionView, bool) {
+	st := s.held
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.sweepLocked(time.Now())
+	h := st.byID[id]
+	if h == nil {
+		return actionView{}, false
+	}
+	return viewOf(h, true), true
+}
+
+// approvalFactor is what approving client's held changes takes.
+func (s *Server) approvalFactor(client string) string {
+	if a := s.cfg().approvalFor(client); a != nil {
+		return a.Factor
+	}
+	return factorPINTOTP
 }
 
 // rejectLocked rejects one record and counts it toward the client's pause. Callers hold st.mu.
@@ -614,22 +685,32 @@ func (s *Server) rejectAll(client string) int {
 	return n
 }
 
-// actionApprove checks, in order, that the caller approves the record's client, that the record
-// is still held, that the hash is the record's, that the configs are what it was checked against,
-// that no other apply waits for confirmation, that a policy still grants the call and that approval
-// can work at all. Only then are the factors checked, which is the one step that counts a try. A
-// record that passes is run once, through the tool's own function, so every check that tool makes
-// (uci_apply's refusal of code execution among them) still stands.
+// actionApprove is the approver's MCP tool. Once the router's own bot is bound it is refused before
+// anything is looked up: the owner approves in the router's chat.
 func (s *Server) actionApprove(ctx context.Context, caller string, in actionApproveIn) (string, string, error) {
+	if err := s.mcpApproverRefusal(); err != nil {
+		return "", "action_approve", err
+	}
+	return s.approveHeld(ctx, approverRef{client: caller}, in.ID, in.Hash, unlockAttempt{Code: in.Code, PIN: in.PIN})
+}
+
+// approveHeld checks, in order, that by decides the record's client, that the record is still held,
+// that the hash is the record's, that the configs are what it was checked against, that no other
+// apply waits for confirmation, that a policy still grants the call and that approval can work at
+// all. Only then are the factors checked, which is the one step that counts a try. A record that
+// passes is run once, through the tool's own function, so every check that tool makes (uci_apply's
+// refusal of code execution among them) still stands. The MCP path and the router's chat both come
+// here, so both run one order of checks.
+func (s *Server) approveHeld(ctx context.Context, by approverRef, id, hash string, f unlockAttempt) (string, string, error) {
 	st := s.held
 	now := time.Now()
 	st.mu.Lock()
-	h, err := s.decidable(caller, in.ID, now)
+	h, err := s.decidable(by, id, now)
 	if err != nil {
 		st.mu.Unlock()
 		return "", "action_approve", err
 	}
-	if len(in.Hash) != 64 || subtle.ConstantTimeCompare([]byte(strings.ToLower(in.Hash)), []byte(h.Hash)) != 1 {
+	if len(hash) != 64 || subtle.ConstantTimeCompare([]byte(strings.ToLower(hash)), []byte(h.Hash)) != 1 {
 		st.mu.Unlock()
 		return "", "action_approve", &refusedError{"refused: the hash is not that of " + h.ID +
 			"'s card; approve exactly the card that was shown, with its whole hash"}
@@ -673,7 +754,16 @@ func (s *Server) actionApprove(ctx context.Context, caller string, in actionAppr
 	}
 	up := s.unlockPolicyFor(h.Client)
 	up.Factor = a.Factor
-	if err := s.mfa.Verify(h.Client, unlockAttempt{Code: in.Code, PIN: in.PIN}, up, now); err != nil {
+	if err := s.mfa.Verify(h.Client, f, up, now); err != nil {
+		if by.viaBot() {
+			ev := AuditEvent{Time: nowISO(), Client: h.Client, Tool: "action_approve", Outcome: OutcomeError,
+				Summary: "approval of " + h.ID + " in the router's chat", Error: err.Error()}
+			if fn := foldOf(err); fn != nil {
+				s.audit.Fold(*fn, ev)
+			} else {
+				s.audit.Record(ev)
+			}
+		}
 		return back(err)
 	}
 
@@ -691,7 +781,7 @@ func (s *Server) actionApprove(ctx context.Context, caller string, in actionAppr
 	st.rejects[h.Client] = 0
 	st.mu.Unlock()
 	ev := AuditEvent{Time: nowISO(), Client: h.Client, Tool: h.Tool, Scope: strings.Join(h.Scopes, " "),
-		Outcome: OutcomeOK, Summary: summary + " (approved " + h.ID + " by " + caller + ")"}
+		Outcome: OutcomeOK, Summary: summary + " (approved " + h.ID + " by " + by.String() + ")"}
 	if runErr != nil {
 		ev.Outcome, ev.Error = OutcomeError, runErr.Error()
 	}
