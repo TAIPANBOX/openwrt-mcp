@@ -306,6 +306,19 @@ func (r *apRig) staged() []string {
 // ubusCalls is every ubus call but the reload uci_apply makes after a commit.
 func (r *apRig) ubusCalls() []string {
 	r.t.Helper()
+	var out []string
+	for _, l := range r.ubusLog() {
+		// The router told that the owner's chat changed (ownerBotEvent) is not a change of the router.
+		if !strings.Contains(l, `"type":"`+ownerBotEventType+`"`) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// ubusLog is every ubus call made, the owner's chat events among them.
+func (r *apRig) ubusLog() []string {
+	r.t.Helper()
 	b, _ := os.ReadFile(r.ubus)
 	var out []string
 	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {

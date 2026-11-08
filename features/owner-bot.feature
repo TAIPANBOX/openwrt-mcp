@@ -10,8 +10,8 @@
 # bot keeps today's path. The details are in that page's last section.
 #
 # What a broken listener can do on a running router (the helper's sockets, the pipe's bytes, the whole
-# flow as procd starts both parts) is shown by scripts/e2e-vlab.sh, TestOwnBotVlab, which needs a vlab
-# and so is not bound here.
+# flow as procd starts both parts) is shown by scripts/e2e-vlab.sh, TestOwnBotVlab and TestOwnBotFlint2Vlab (a router configured as the Flint 2 was, the real listener carrying the pipe), which need a vlab
+# and so are not bound here.
 #
 # Each scenario is bound to a test below it, and scripts/gate-scenarios-bound.sh checks the binding
 # both ways and runs the tests.
@@ -174,3 +174,31 @@ Feature: the owner approves past the listener, through the router's own bot
     When status runs before and after the owner's chat is bound
     Then it names the guarantee, and says the owner's client approves before and the router's chat after
     And the token file's writers do not undo each other
+
+  # bound to: TestAFactorInTwoMessagesApproves, TestACodeSplitAsTheAppShowsItApproves, TestTwoMessagesAreOneTryInOneWindow, TestAFactorIsReadWholeOrAsTheAppShowsIt
+  Scenario: the owner sends the factor as they type it
+    When the owner, after Approve, sends the PIN and then the code in the next message, or the code split as the app shows it
+    Then each message is deleted before it is read and the change is approved, the two messages tried once
+    And the code is due when the prompt was, a wrong code counts one try, and a code with no PIN before it tries nothing
+
+  # bound to: TestThePromptSaysWhatToSend
+  Scenario: after Approve the bot says exactly what to send
+    When the owner taps Approve
+    Then the bot asks for the PIN, a space and the six digits of the app's entry for this client on this router, in one message, with an example
+
+  # bound to: TestTheHeldAnswerSendsTheOwnerToTheCard
+  Scenario: the agent sends the owner to the card, not to /unlock
+    Given the owner's chat is bound
+    When a change is held
+    Then the agent is told the card is in the router's own chat, that the owner taps Approve and sends the PIN and the code, and that /unlock does not approve it
+    And the agent is told to read the outcome with action_status, since nobody tells it
+
+  # bound to: TestBindingTellsTheRouterTheChatIsBound, TestRemovingTheBotTellsTheRouter
+  Scenario: the router itself is told when the owner's chat changes
+    When the owner's chat is bound, or the bot is removed or given a new token
+    Then the router is told with the service event openwrt-mcp.owner_bot, so the agent restarts without the page
+
+  # bound to: TestEachCardIsALineInTheLog
+  Scenario: each card is a line in the log
+    When a card is sent to the owner's chat, and when it is closed
+    Then the router's log says so, with the record's id

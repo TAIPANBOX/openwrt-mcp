@@ -66,6 +66,7 @@ func runOwnerBot(w io.Writer, stdin io.Reader, statePath string, args []string) 
 			fmt.Fprintln(w, "the router's bot already has this token; nothing changed")
 			return nil
 		}
+		wasBound := f.chat() != 0
 		if err := f.write("token", tok+"\n"); err != nil {
 			return err
 		}
@@ -73,6 +74,9 @@ func runOwnerBot(w io.Writer, stdin io.Reader, statePath string, args []string) 
 		f.remove("chat")
 		f.remove("bind")
 		f.remove("seen")
+		if wasBound {
+			ownerBotEvent("cleared")
+		}
 		fmt.Fprintln(w, "the bot's token is saved; bind the owner's chat with: openwrt-mcp owner-bot bind")
 		return nil
 
@@ -139,6 +143,7 @@ func runOwnerBot(w io.Writer, stdin io.Reader, statePath string, args []string) 
 		for _, n := range []string{"token", "chat", "bind", "seen"} {
 			f.remove(n)
 		}
+		ownerBotEvent("cleared")
 		fmt.Fprintln(w, "the router's bot is gone; held changes are approved by the owner's MCP client again, if one is paired")
 		return nil
 	}

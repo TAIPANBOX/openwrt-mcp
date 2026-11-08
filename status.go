@@ -81,6 +81,10 @@ func capabilities() map[string]bool {
 		// bytes it has no key for; no MCP client approves, lists, rejects, unlocks or locks for an
 		// approval section any more (ownbot.go, docs/approval-path.md).
 		"owner_approves_past_the_listener": true,
+		// Binding the owner's chat, and removing the bot or giving it a new token, tell the router
+		// with the procd service event openwrt-mcp.owner_bot, so the agent's init restarts it and the
+		// page that set the bot up need not (ownbot.go ownerBotEvent).
+		"owner_bot_tells_the_router": true,
 	}
 }
 

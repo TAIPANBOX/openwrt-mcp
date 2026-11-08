@@ -410,8 +410,17 @@ func (s *Server) hold(client, tool string, input any, scopes, argv []string, cl 
 	return h, ""
 }
 
-// heldText is what the agent is told of a held call: not an error, and not to be retried.
-func heldText(h *heldAction) string {
+// heldText is what the agent is told of a held call: not an error, and not to be retried. With the
+// router's own bot bound (viaBot), the card is in the router's chat and nobody tells the agent the
+// outcome, so the agent sends the owner to that card and reads the outcome with action_status.
+func heldText(h *heldAction, viaBot bool) string {
+	if viaBot {
+		return fmt.Sprintf("HELD %s until %s\nThis change waits for the owner's approval. The router has sent them a "+
+			"card for it in the router's own Telegram chat: they tap Approve on it and send their PIN and the code "+
+			"from their authenticator app. /unlock does not approve it. Nothing was applied. Do not retry it or ask "+
+			"the owner for a PIN or a code; nobody tells you the outcome, so read it with action_status.\n%s",
+			h.ID, h.Expires.UTC().Format(time.RFC3339), strings.Join(h.Headlines, "\n"))
+	}
 	return fmt.Sprintf("HELD %s until %s\nThis change waits for the owner's approval, which they give in the "+
 		"chat with their PIN and a code. Nothing was applied. Do not retry it or ask the owner for a PIN or a code; "+
 		"you will be told the outcome, or read it with action_status.\n%s",
