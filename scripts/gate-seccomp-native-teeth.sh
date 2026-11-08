@@ -35,9 +35,9 @@ plant() {
 }
 
 plant "mount points at umount2's number in the $ARCH table" "$TABLE" \
-	's/"mount": unix.SYS_MOUNT,/"mount": unix.SYS_UMOUNT2,/' TestEveryDeniedCallIsKilledByThisKernel
-plant "ptrace points at kcmp's number in the $ARCH table" "$TABLE" \
-	's/"ptrace": unix.SYS_PTRACE,/"ptrace": unix.SYS_KCMP,/' TestFilterOnARealKernel
+	's/"mount": unix.SYS_MOUNT,/"mount": unix.SYS_UMOUNT2,/' TestEveryNameOfTheListHasANumberOnThisArchitecture
+plant "kexec_file_load points at a number that is no call in the $ARCH table" "$TABLE" \
+	's/"kexec_file_load": unix.SYS_KEXEC_FILE_LOAD,/"kexec_file_load": 9999,/' TestEveryDeniedCallIsKilledByThisKernel
 plant "the $ARCH filter checks another audit architecture" "$TABLE" "$WRONG_ARCH" TestFilterOnARealKernel
 
 fresh

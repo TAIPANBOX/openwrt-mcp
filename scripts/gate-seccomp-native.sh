@@ -15,7 +15,8 @@ TESTS='TestBPFConstantsAreTheKernels TestEveryNameOfTheListHasANumberOnThisArchi
 TestEveryDeniedCallIsKilledByThisKernel TestExpectedCapabilityMaskIsTheCapabilityFile
 TestFilterDeniesEveryListedCallAndAllowsTheRest TestFilterKillsAnotherArchitecturesCalls
 TestFilterRefusesClone3AndNamespaceClones TestFilterKillsEveryX32Number TestFilterRefusesAListThatNamesCloneOrIsEmpty
-TestDeniedListIsWellFormedAndKeepsTheDaemonsOwnCallsOut TestSeccompStatusMustShowTheFilterInForce'
+TestDeniedListIsWellFormedAndKeepsTheDaemonsOwnCallsOut TestSeccompStatusMustShowTheFilterInForce
+TestFilterIsNotBuiltWhenTwoNamesShareANumber'
 
 [ "$(uname -s)" = Linux ] || { echo "FAIL: measured nothing: $(uname -s) is not Linux, and the filter is Linux's"; exit 1; }
 case $(uname -m) in

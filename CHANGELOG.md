@@ -23,6 +23,9 @@ what is not.
 - `scripts/gate-seccomp-native.sh`, with its teeth: the filter on a real kernel of each architecture,
   every listed call by the number the kernel's own headers give its name. CI runs it on amd64 and on
   an arm64 runner, so arm64's table, the one a router uses, is executed and not only compiled.
+- The filter is not built from a table that gives two names one system call number, on any
+  architecture, so `serve` does not start on such a table: one of the two names would point at another
+  call's number, and the call it stands for would never be killed.
 
 ### Changed
 
