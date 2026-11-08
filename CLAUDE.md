@@ -105,9 +105,10 @@ before the 2026-10-17 security wave, so the numbering starts here.
     also kills `execve` and `execveat`; it refuses to run as root or holding any capability, has no ubus
     ACL and reads no file of the daemon's state. The helper (`openwrt-mcp helper`) opens no IP socket;
     it serves one Unix socket, `root:openwrt-mcp 0660` in a `0750` directory, and only a peer whose
-    `SO_PEERCRED` uid is the listener's; it takes `auth`, `call`, `config` and `health` and nothing
-    else, a `call` only to a tool of `toolSpecs` with that tool's own input type, every frame decoded
-    strictly and within its bounds; it resolves the bearer token itself on every call, so no request
+    `SO_PEERCRED` uid is the listener's, and it connects to one more, the listener's pipe to Telegram
+    (invariant 13), only when the kernel reports the listener's uid for it; it takes `auth`, `call`,
+    `config` and `health` and nothing else, a `call` only to a tool of `toolSpecs` with that tool's own
+    input type, every frame decoded strictly and within its bounds; it resolves the bearer token itself on every call, so no request
     names a client, and the policy, the owner's rules, the second factor, the throttle, the held
     changes and the audit log are all decided and kept in the helper. `@decided 2026-11-08`: the split
     of privileges straight after the light cage; the reasons the decisions sit in the helper, and what
@@ -117,9 +118,30 @@ before the 2026-10-17 security wave, so the numbering starts here.
     caught by the test named beside it; on a router: `scripts/e2e-vlab.sh`, `TestJailVlab`, needs a
     vlab)
 
+13. **Once the router's own bot is bound, the owner's card and factor never pass the listener.** The
+    helper sends the record's own card to the bound chat and reads the owner's tap and factor itself,
+    over TLS to `api.telegram.org` that ends in the helper and runs over the listener's pipe; the pipe
+    serves root only, dials that one address and copies bytes it has no key for; the binary's only IP
+    sockets are the listener's two and the status probe's. A tap counts only from the bound private
+    chat, on the message the helper sent for a record still held. The factor is the next message after
+    Approve, within 180 seconds, deleted before it is read, and runs the order of checks
+    `action_approve` runs, the factor last and its step spent; a factor with no prompt, after the
+    prompt closed, or sent while the helper was not reading counts nothing. A chat is bound only by the
+    one-time code `owner-bot bind` makes, within 30 minutes of the helper's own clock, and until then
+    the bot answers nobody. While a chat is bound, no MCP client lists, approves, rejects, unlocks or
+    locks for an approval section, and binding revokes the approver clients' tokens. The bot's token is
+    in no error and no file but its own. A router with no bot bound keeps the MCP approver path, and
+    the listener then carries its factor (`docs/privilege-split.md`). `@decided 2026-11-08`: the
+    router's own bot (option A2), paraphrased in ownbot.go's header and in `docs/approval-path.md`.
+    (gate: `scripts/gate-ownbot.sh`, teeth: `scripts/gate-ownbot-teeth.sh`; test:
+    `features/owner-bot.feature`, every scenario bound; mutants: `scripts/mutate-ownbot.py`, each caught
+    by the test named beside it; fuzz: `FuzzTelegramUpdates`; on a router: `scripts/e2e-vlab.sh`,
+    `TestOwnBotVlab`, needs a vlab)
+
 Each invariant is restated as scenarios in `features/`: `exec-argument-grants.feature`,
 `ubus-call-grants.feature`, `audit-keeps-secrets-out.feature`, `wireguard-key-off-argv.feature`,
-`second-factor-throttle.feature`, `service-narrowing.feature` and `privilege-split.feature`.
+`second-factor-throttle.feature`, `service-narrowing.feature`, `privilege-split.feature` and
+`owner-bot.feature`.
 Every scenario is bound to a named test, and `scripts/gate-scenarios-bound.sh` checks the binding
 both ways and runs the tests.
 
@@ -140,15 +162,18 @@ GOTOOLCHAIN=local go vet ./... && GOTOOLCHAIN=local go test ./... -count=1
 ./scripts/gate-jail.sh && ./scripts/gate-jail-teeth.sh
 ./scripts/gate-seccomp-native.sh && ./scripts/gate-seccomp-native-teeth.sh   # Linux, amd64 or arm64, natively
 ./scripts/gate-split.sh && ./scripts/gate-split-teeth.sh
+./scripts/gate-ownbot.sh && ./scripts/gate-ownbot-teeth.sh
 python3 scripts/mutate-held.py
 python3 scripts/mutate-split.py
+python3 scripts/mutate-ownbot.py
 ./scripts/test-real-uci.sh   # needs docker
 ```
 
 `scripts/gate-apk-parity.sh` needs docker and runs in CI's `apk` job only. `scripts/e2e-vlab.sh` needs the
 vlab on forge and is run there by hand: it runs every tool against the daemon on a virtual router, in its
-two parts, and the boundaries of the split; `--daemon DIR` runs the same tests against another tree's
-daemon (origin/main's, for the red run).
+two parts, the boundaries of the split, and the owner's approval through the router's own bot against a
+Telegram stand-in served on the router with a CA only that run trusts; `--daemon DIR` runs the same
+tests against another tree's daemon (origin/main's, for the red run).
 
 ## Rules for a change
 

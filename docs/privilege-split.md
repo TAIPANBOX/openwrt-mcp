@@ -36,7 +36,7 @@ in a tool's input handling was root on the router.
 | Capabilities | none: all five lists of `/etc/capabilities/openwrt-mcp-serve.json` are empty | the nine of `/etc/capabilities/openwrt-mcp.json`, as in the first step |
 | `no_new_privs` | yes | yes |
 | Seccomp | the daemon's list, and `execve` and `execveat`: it starts no program | the daemon's list |
-| Network | listens on `127.0.0.1:8730` and refuses any other address | none: no IP socket at all |
+| Network | listens on `127.0.0.1:8730` and refuses any other address; serves the pipe the router's own bot reaches Telegram through, and dials `api.telegram.org:443` for it | none: no IP socket at all; its bot's TLS runs over the listener's pipe |
 | ubus | no ACL: every call is refused | root |
 | Files of the daemon | none; even its listen address comes from the helper | all of `/etc/openwrt-mcp` and the configs |
 | Parses | HTTP, the Origin header, the bearer header, MCP's JSON-RPC and sessions, each tool's JSON schema | one frame per connection, of one strict JSON shape, from one peer |
@@ -202,7 +202,11 @@ What it does not hold:
   bearer token, PIN and code an agent or the owner sends while it is broken, and can act as those
   clients within their grants. It could also put the owner's PIN and code on another held change
   than the one the owner looked at, because a TOTP code is not bound to the card. It cannot approve
-  anything without the owner giving a code at that moment.
+  anything without the owner giving a code at that moment. Once the router's own bot is bound, the
+  owner's card, tap and factor do not pass the listener at all: the helper sends and reads them over
+  TLS that ends in it, the listener carries only bytes it has no key for, and no MCP client approves
+  any more ([approval-path.md](approval-path.md), invariant 13). On a router with no bot bound, this
+  stands as written.
 - **The helper is trusted, and it is large.** It holds the whole gate and every tool, as the daemon
   did. A bug in the gate, in a tool, or in the helper's decoder is still root.
 - **`exec` is a root shell under the owner's grant and second factor**, and a broad grant is still a
@@ -225,6 +229,8 @@ What it does not hold:
 - `scripts/mutate-split.py`: 29 ways of breaking the split, among them an answer lost after a call was
   sent being told as nothing run, each caught by the test named for it.
 - `features/privilege-split.feature`: the scenarios, each bound to a test.
+- The owner's approval past the listener, through the router's own bot, has its own invariant (13),
+  gate, mutants, features and vlab test: [approval-path.md](approval-path.md) has the design.
 - `scripts/e2e-vlab.sh`, `TestJailVlab`: the whole tool set through the listener on a virtual OpenWrt
   router, both parts as procd starts them, what the kernel shows for each, and what the listener
   cannot do there.

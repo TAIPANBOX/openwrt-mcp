@@ -38,9 +38,9 @@ the audit log. Nothing is granted by default.
 | `mfa_lock` | *(ungated)* | Closes the calling client's unlock window at once. Ungated because it only removes access. The approver, with `client`, closes that client's window and rejects every change it has held. |
 | `action_status` | *(ungated)* | The client's own held changes: held, applied, failed, rejected, expired or withdrawn, with the outcome of one that ran. An applied `uci_apply` names its `uci_confirm` token. |
 | `action_withdraw` | *(ungated)* | Withdraws one of the client's own changes that still waits. |
-| `action_list` | *(the approval section)* | For the approver only: the held changes of the clients it approves, each with its card and hash, and beside them a `throttle` list: per client, `failures`, `limit`, `locked_out_until`, `refused` and `persisted`, so the owner's chat can say that someone else is trying. |
-| `action_approve` | *(the approval section)* | For the approver only: approves one held change by its id and the hash of its card, with the owner's PIN and a current code. The change runs once, exactly as held. |
-| `action_reject` | *(the approval section)* | For the approver only: rejects one held change. Takes no factor. |
+| `action_list` | *(the approval section)* | For the approver only: the held changes of the clients it approves, each with its card and hash, and beside them a `throttle` list: per client, `failures`, `limit`, `locked_out_until`, `refused` and `persisted`, so the owner's chat can say that someone else is trying. Refused once the router's own bot is bound. |
+| `action_approve` | *(the approval section)* | For the approver only: approves one held change by its id and the hash of its card, with the owner's PIN and a current code. The change runs once, exactly as held. Refused once the router's own bot is bound: the owner approves in the router's chat. |
+| `action_reject` | *(the approval section)* | For the approver only: rejects one held change. Takes no factor. Refused once the router's own bot is bound. |
 
 How the second factor and held changes work: [security.md](security.md). `openwrt-mcp mfa reset
 <client>` clears a client's failed tries; it is a root command on the router and no tool, so no MCP

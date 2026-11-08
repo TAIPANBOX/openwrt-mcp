@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+**The owner approves past the listener, through the router's own bot.** `@decided 2026-11-08`: option
+A2 of [docs/approval-path.md](docs/approval-path.md). The helper sends the card of a held change to the
+owner's Telegram chat and reads the owner's tap and factor itself, through a bot of the router's own;
+TLS ends in the helper and runs over a pipe the listener serves, which copies bytes it has no key for,
+so the helper still opens no IP socket; the owner approves as before, one tap and one message with the
+PIN and the code. Once a chat is bound, no MCP client approves, lists, rejects, unlocks or locks for an
+approval section. A router with no bot bound keeps today's path.
+
+### Added
+
+- `openwrt-mcp owner-bot set | bind | status | clear`: the bot's token from standard input, a one-time
+  code and its t.me link that bind the owner's chat when Start is pressed, the state, and its removal.
+  Files in `/etc/openwrt-mcp/owner-bot` (0700, each 0600).
+- The listener's pipe to `api.telegram.org:443` on `/var/run/openwrt-mcp-relay/telegram.sock`, served
+  for root only; the init script makes its directory, the listener's own, 0700. `-relay` names another
+  socket.
+- In the owner's chat: the card with Approve and Reject, a prompt of 180 seconds after Approve, the
+  factor's message deleted before it is read, `/unlock PIN code` and `/lock`, and the card edited with
+  each outcome.
+- `owner_approves_past_the_listener` in `status --json`'s capabilities; `owner_bot` and each approval's
+  `channel` in the report.
+- Invariant 13, `scripts/gate-ownbot.sh` with its teeth, `scripts/mutate-ownbot.py`,
+  `features/owner-bot.feature`, `FuzzTelegramUpdates`, and `TestOwnBotVlab` in `scripts/e2e-vlab.sh`.
+
+### Changed
+
+- `action_list`, `action_approve`, `action_reject`, and `mfa_unlock` and `mfa_lock` naming another
+  client are refused once the router's chat is bound, and binding revokes the approver clients'
+  tokens.
+- The token file is written under a lock, from what it holds at that moment, so `pair` and the
+  helper's revoke do not undo each other.
+
 ## v0.5.0-taipanbox.9 (binary version 0.5.0.9)
 
 **The part of the daemon that meets the network holds no root.** The second step of the estate's gap
