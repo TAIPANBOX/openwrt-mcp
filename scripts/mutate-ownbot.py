@@ -66,8 +66,10 @@ MUTANTS = [
      "TestACardTooLongForOneMessageIsCutAndNotApproved"),
     ("a cut card is approved from the chat", "ownbot.go", "\t\tif card.cut {\n", "\t\tif false {\n",
      "TestACardTooLongForOneMessageIsCutAndNotApproved"),
-    ("one card Telegram refuses stops the pass", "ownbot.go",
-     "\t\t\t\tb.later(v.ID, now)\n\t\t\t\tcontinue\n", "\t\t\t\tb.later(v.ID, now)\n\t\t\t\treturn\n",
+    # The first version's fault: a refused card neither set aside nor passed, so the pass stopped at it.
+    # (return in place of continue alone is now only a tick's delay: the card's own wait passes it.)
+    ("one card Telegram refuses stops every card after it", "ownbot.go",
+     "\t\t\t\toffline = !telegramRefused(err)\n\t\t\t\tb.later(v.ID, now)\n\t\t\t\tcontinue\n", "\t\t\t\treturn\n",
      "TestACardTelegramRefusesDoesNotHoldBackTheNext"),
     ("a card set aside is never tried again", "ownbot.go", "\tr.next = now + r.wait\n", "\tr.next = now + 1000000*time.Hour\n",
      "TestACardTelegramRefusesDoesNotHoldBackTheNext"),
