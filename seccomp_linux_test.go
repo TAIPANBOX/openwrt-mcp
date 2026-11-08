@@ -5,8 +5,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -66,6 +70,22 @@ func seccompChild(mode string) int {
 		println("confine:", err.Error())
 		return 3
 	}
+	// "nr:<number>": one call by number, with every argument all ones, which every call on the list
+	// refuses harmlessly if the filter lets it through (a bad pointer, a bad descriptor, a bad magic
+	// number). The line before it says the child got past the filter's installation, so a child the
+	// filter killed earlier, at its own start, is not counted as the call being stopped.
+	if nr, ok := strings.CutPrefix(mode, "nr:"); ok {
+		n, err := strconv.ParseUint(nr, 10, 32)
+		if err != nil {
+			println("bad number:", nr)
+			return 7
+		}
+		os.Stderr.WriteString("reached " + nr + "\n")
+		all := ^uintptr(0)
+		syscall.RawSyscall6(uintptr(n), all, all, all, all, all, all)
+		println("the call was not stopped")
+		return 6
+	}
 	switch mode {
 	case "plain":
 		return 0
@@ -105,13 +125,18 @@ func seccompChild(mode string) int {
 
 func runSeccompChild(t *testing.T, mode string) error {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(), "OPENWRT_MCP_SECCOMP_CHILD="+mode)
-	out, err := cmd.CombinedOutput()
+	out, err := seccompChildOutput(mode)
 	if err != nil {
 		t.Logf("%s: %v %s", mode, err, out)
 	}
 	return err
+}
+
+func seccompChildOutput(mode string) (string, error) {
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(), "OPENWRT_MCP_SECCOMP_CHILD="+mode)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func killedBySIGSYS(err error) bool {
@@ -135,6 +160,81 @@ func TestFilterOnARealKernel(t *testing.T) {
 	if err := runSeccompChild(t, "clone3"); err != nil {
 		t.Errorf("clone3 was not refused with ENOSYS: %v", err)
 	}
+}
+
+// kernelHeaderNumbers reads this architecture's system call numbers from the kernel's own headers
+// (linux-libc-dev): an account of the numbers that owes nothing to x/sys/unix or to deniedTable, so
+// a name in the table that points at another call's number shows up against it.
+func kernelHeaderNumbers() (map[string]uint32, string, error) {
+	var candidates []string
+	switch runtime.GOARCH {
+	case "amd64":
+		candidates = []string{"/usr/include/x86_64-linux-gnu/asm/unistd_64.h", "/usr/include/asm/unistd_64.h"}
+	case "arm64":
+		// From Linux 6.11 arm64's numbers are generated into asm/unistd_64.h; before, asm/unistd.h
+		// takes them from the generic table.
+		candidates = []string{"/usr/include/aarch64-linux-gnu/asm/unistd_64.h", "/usr/include/asm/unistd_64.h",
+			"/usr/include/asm-generic/unistd.h"}
+	}
+	def := regexp.MustCompile(`(?m)^#define __NR_([a-z0-9_]+)[ \t]+([0-9]+)[ \t]*$`)
+	for _, p := range candidates {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		nrs := map[string]uint32{}
+		for _, m := range def.FindAllStringSubmatch(string(b), -1) {
+			n, err := strconv.ParseUint(m[2], 10, 32)
+			if err != nil {
+				return nil, p, err
+			}
+			nrs[m[1]] = uint32(n)
+		}
+		if len(nrs) < 200 {
+			return nil, p, fmt.Errorf("%s defines only %d system calls", p, len(nrs))
+		}
+		return nrs, p, nil
+	}
+	return nil, "", fmt.Errorf("no kernel header with the %s system call numbers in %v", runtime.GOARCH, candidates)
+}
+
+// Every call on the list, by the number this kernel's headers give its name, is ended by SIGSYS on
+// this kernel. CI runs it natively on amd64 and on an arm64 runner (scripts/gate-seccomp-native.sh),
+// so the table and the audit architecture of each are executed by a kernel of that architecture,
+// not only compiled. OPENWRT_MCP_KERNEL_HEADERS=required makes a missing header a failure.
+func TestEveryDeniedCallIsKilledByThisKernel(t *testing.T) {
+	hdr, src, err := kernelHeaderNumbers()
+	if err != nil {
+		if os.Getenv("OPENWRT_MCP_KERNEL_HEADERS") == "required" {
+			t.Fatalf("measured nothing: %v", err)
+		}
+		t.Skipf("measured nothing: %v", err)
+	}
+	names, err := DeniedNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	killed := 0
+	for _, name := range names {
+		want, ok := hdr[name]
+		if !ok {
+			t.Errorf("%s: %s does not define __NR_%s", name, src, name)
+			continue
+		}
+		if got := deniedTable[name]; got != want {
+			t.Errorf("%s: the %s table says %d, %s says %d", name, runtime.GOARCH, got, src, want)
+		}
+		out, err := seccompChildOutput(fmt.Sprintf("nr:%d", want))
+		switch {
+		case !strings.Contains(out, fmt.Sprintf("reached %d\n", want)):
+			t.Errorf("%s (%d): the child did not get to the call: %v %s", name, want, err, out)
+		case !killedBySIGSYS(err):
+			t.Errorf("%s (%d): not ended by SIGSYS: %v %s", name, want, err, out)
+		default:
+			killed++
+		}
+	}
+	t.Logf("%s, kernel numbers from %s: %d of %d calls on the list ended by SIGSYS", runtime.GOARCH, src, killed, len(names))
 }
 
 // The mask the daemon insists on is the file procd is given: a change to one without the other

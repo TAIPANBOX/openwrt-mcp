@@ -152,24 +152,32 @@ func DeniedNames() ([]string, error) {
 }
 
 // numbersOf maps names to one architecture's numbers. A name the table lacks is an error: the list
-// would protect nothing with it.
+// would protect nothing with it. So are two names with one number: one of them points at another
+// call's number, and the call it stands for would never be killed.
 func numbersOf(names []string, table map[string]uint32) ([]uint32, error) {
 	var unknown []string
 	var nrs []uint32
+	owner := map[uint32]string{}
 	for _, n := range names {
 		nr, ok := table[n]
 		if !ok {
 			unknown = append(unknown, n)
 			continue
 		}
-		nrs = append(nrs, nr)
+		if prev, dup := owner[nr]; dup && prev != n {
+			return nil, fmt.Errorf("%s and %s are both system call %d in this architecture's table: one of them is not the call it names", prev, n, nr)
+		}
+		if _, dup := owner[nr]; !dup {
+			owner[nr] = n
+			nrs = append(nrs, nr)
+		}
 	}
 	if len(unknown) > 0 {
 		slices.Sort(unknown)
 		return nil, fmt.Errorf("not system calls of this architecture: %s", strings.Join(unknown, ", "))
 	}
 	slices.Sort(nrs)
-	return slices.Compact(nrs), nil
+	return nrs, nil
 }
 
 // buildFilter returns the program for one architecture: audit arch, the numbers of clone and
@@ -181,10 +189,15 @@ func buildFilter(arch, nrClone, nrClone3 uint32, denied []uint32) ([]Insn, error
 	case len(denied) > maxDenied:
 		return nil, fmt.Errorf("filter: %d system calls; at most %d", len(denied), maxDenied)
 	}
+	seen := map[uint32]bool{}
 	for _, nr := range denied {
 		if nr == nrClone || nr == nrClone3 {
 			return nil, errors.New("filter: clone and clone3 have their own rules and are not listed")
 		}
+		if seen[nr] {
+			return nil, fmt.Errorf("filter: system call %d is listed twice", nr)
+		}
+		seen[nr] = true
 	}
 	// Layout: 4 header instructions, the x32 test, 2 + len(denied) tests, one jump to the allow, then the tails,
 	// every jump forward: the clone check (3), ret ERRNO, ret KILL, ret ALLOW. The jump matters: a

@@ -95,9 +95,10 @@ before the 2026-10-17 security wave, so the numbering starts here.
     for a static binary. This narrows the kernel surface and does not contain a broken daemon: it is
     root with the whole of ubus and a writable `/etc`, which only the second step of G3.14 (the split
     of parsing from acting) closes. `@decided 2026-11-08`: a light cage now, no jail.
-    (gate: `scripts/gate-jail.sh`, teeth: `scripts/gate-jail-teeth.sh`; test:
-    `features/service-narrowing.feature`, every scenario bound; on a router: `scripts/e2e-vlab.sh`,
-    `TestJailVlab`, needs a vlab)
+    (gate: `scripts/gate-jail.sh`, teeth: `scripts/gate-jail-teeth.sh`; on a kernel of each
+    architecture: `scripts/gate-seccomp-native.sh`, teeth: `scripts/gate-seccomp-native-teeth.sh`, in CI
+    on amd64 and on an arm64 runner; test: `features/service-narrowing.feature`, every scenario bound;
+    on a router: `scripts/e2e-vlab.sh`, `TestJailVlab`, needs a vlab)
 
 Each invariant is restated as scenarios in `features/`: `exec-argument-grants.feature`,
 `ubus-call-grants.feature`, `audit-keeps-secrets-out.feature`, `wireguard-key-off-argv.feature`,
@@ -120,6 +121,7 @@ GOTOOLCHAIN=local go vet ./... && GOTOOLCHAIN=local go test ./... -count=1
 ./scripts/gate-wg-key-off-argv.sh && ./scripts/gate-wg-key-off-argv-teeth.sh
 ./scripts/gate-throttle.sh && ./scripts/gate-throttle-teeth.sh
 ./scripts/gate-jail.sh && ./scripts/gate-jail-teeth.sh
+./scripts/gate-seccomp-native.sh && ./scripts/gate-seccomp-native-teeth.sh   # Linux, amd64 or arm64, natively
 python3 scripts/mutate-held.py
 ./scripts/test-real-uci.sh   # needs docker
 ```

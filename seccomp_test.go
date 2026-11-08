@@ -158,6 +158,24 @@ func TestFilterRefusesAListThatNamesCloneOrIsEmpty(t *testing.T) {
 	}
 }
 
+// Two names with one number are a table that points a name at another call's number: the call the
+// name stands for would never be killed. The filter is not built from such a table, on any
+// architecture, so serve does not start on it.
+func TestFilterIsNotBuiltWhenTwoNamesShareANumber(t *testing.T) {
+	table := map[string]uint32{"mount": 39, "umount2": 39, "ptrace": 101}
+	if nrs, err := numbersOf([]string{"mount", "ptrace", "umount2"}, table); err == nil {
+		t.Errorf("a table giving mount and umount2 one number was accepted: %v", nrs)
+	} else if !strings.Contains(err.Error(), "mount") || !strings.Contains(err.Error(), "umount2") {
+		t.Errorf("the refusal does not name both calls: %v", err)
+	}
+	if _, err := numbersOf([]string{"mount", "ptrace"}, table); err != nil {
+		t.Errorf("a table with one number per name was refused: %v", err)
+	}
+	if _, err := buildFilter(tArch, tClone, tClone3, []uint32{101, 165, 101}); err == nil {
+		t.Error("a list naming one number twice built a filter")
+	}
+}
+
 func TestDeniedListIsWellFormedAndKeepsTheDaemonsOwnCallsOut(t *testing.T) {
 	names, err := DeniedNames()
 	if err != nil {
