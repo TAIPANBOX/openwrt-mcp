@@ -191,6 +191,12 @@ jobs:
           ./mkapk.fault.sh "$BIN" "$V" "$A" >/dev/null
           PKGREL=2 ./mkapk.sh "$BIN" "$V" "$A" >/dev/null
           expect_red "post-upgrade enables" check_upgrade_keeps_boot_start
+          # Files packaged as the builder's own: on a router they are nobody's, the binary and a
+          # config's .apk-new among them, as on a Flint 2 on 2026-11-08.
+          sed 's/chown -R 0:0 "$DATA" \&\& apk mkpkg/apk mkpkg/' mkapk.sh > mkapk.fault.sh && chmod +x mkapk.fault.sh
+          ! cmp -s mkapk.sh mkapk.fault.sh || { echo "TEETH FAIL: the owner fault planted nothing"; exit 1; }
+          ./mkapk.fault.sh "$BIN" "$V" "$A" >/dev/null
+          expect_red "files owned by the builder" check_modes
           rm -f mkapk.fault.sh
           # And green again, so the reds above were the faults and not the harness.
           ./mkapk.sh "$BIN" "$V" "$A" >/dev/null

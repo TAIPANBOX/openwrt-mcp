@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- The router's own bot takes the factor as the owner types it: the PIN and the code in one message
+  or the PIN and then the code in the next, within the same 180 seconds, and the code whole or in the
+  two halves the authenticator app shows (`305 917`). It is still tried once, after both messages are
+  deleted.
+- After Approve the bot says exactly what to send: the PIN, a space and the six digits of the app's
+  entry (`openwrt-mcp, <client>@<router>`), with an example.
+- With the bot bound, a held change's answer sends the agent's owner to the card in the router's own
+  chat (Approve, then the PIN and the code), says `/unlock` does not approve it, and tells the agent to
+  read the outcome with `action_status`.
+- Binding the owner's chat, and removing the bot or giving it a new token, send the procd service
+  event `openwrt-mcp.owner_bot` (`bound` or `cleared`), so the agent's init can restart it without
+  the page that set the bot up; `status --json` names `owner_bot_tells_the_router`.
+- Each card the bot sends, and each it closes, is a line in the log.
+- The `.apk` installs its files owned by root: `apk mkpkg` recorded the builder's uid, and a router
+  showed the binary and a config's `.apk-new` owned by `nobody`. `gate-apk-parity.sh` checks the owner
+  of every file and of `.apk-new`, and sorts the `.ipk`'s list in the C locale as busybox does.
+
 ## v0.5.0-taipanbox.10 (binary version 0.5.0.10)
 
 **The owner approves past the listener, through the router's own bot.** `@decided 2026-11-08`: option
