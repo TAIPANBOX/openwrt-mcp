@@ -157,6 +157,11 @@ approves from Telegram. Every rule, the held list, the card and the second facto
 The first check that refuses answers, and the tool's own code runs only once all of them have
 passed. `pair`, `allow` and `unpair` are command-line only, so no tool can widen a grant.
 
+The daemon is two processes. The part that parses HTTP and MCP runs as its own account, with no
+capability, no ubus and no program it may start; the part that holds root makes every one of these
+checks and runs every tool, and does not listen on the network
+([docs/privilege-split.md](docs/privilege-split.md)).
+
 ## Scenarios
 
 **A new router, read only.** Ask in plain language and let the agent find the objects:
@@ -242,6 +247,7 @@ Packages that run on the OpenWrt router itself, each from a signed apk feed for 
 |---|---|
 | [docs/tools.md](docs/tools.md) | all sixteen tools, their scopes and rules, `uci_apply`'s rollback and its refusal to run code |
 | [docs/security.md](docs/security.md) | the model, the second factor, held changes, secret redaction, the edges |
+| [docs/privilege-split.md](docs/privilege-split.md) | the two processes, the protocol between them, what each holds and what the split does not hold |
 | [docs/install.md](docs/install.md) | SSH keys, building it, the tunnel under systemd, GL.iNet firmware and its status page |
 | [docs/measured.md](docs/measured.md) | every run, with its date, router and figures |
 | [CHANGELOG.md](CHANGELOG.md) | every release of the fork and of upstream |
