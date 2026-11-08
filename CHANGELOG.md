@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0-taipanbox.10 (binary version 0.5.0.10)
 
 **The owner approves past the listener, through the router's own bot.** `@decided 2026-11-08`: option
 A2 of [docs/approval-path.md](docs/approval-path.md). The helper sends the card of a held change to the
