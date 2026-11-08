@@ -450,7 +450,7 @@ openwrt-mcp status --json --audit 0 | jsonfilter -e '@.capabilities'
 | `apk_add_official_feed_only` | 0.5.0.4 | `apk_add` installs from the official feeds only |
 | `actions_held_for_approval` | 0.5.0.5 | high-impact changes wait for the owner's approval |
 | `second_factor_throttle_persisted` | 0.5.0.8 | the guess throttle outlives a restart and a reboot, and the disk holds no time |
-| `listener_holds_no_root` | next release | the part that parses HTTP and MCP runs as its own account with no capability, and refuses to run as root |
+| `listener_holds_no_root` | 0.5.0.9 | the part that parses HTTP and MCP runs as its own account with no capability, and refuses to run as root |
 
 The same report gives each client's `mfa` object (`factor`, `totp_enrolled`, `totp_pending`,
 `pin_set`, `failures`, and `live_state`) and, for a client with an approval section, its `approval`
