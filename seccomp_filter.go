@@ -77,28 +77,54 @@ type Insn struct {
 // errNoSeccomp says there is no filter to install here; serve goes on without one.
 var errNoSeccomp = errors.New("no seccomp filter for this platform")
 
-// confine installs the filter first thing in serve. Where there is none to install it says so and
-// serve goes on; where it fails, serve does not start: a daemon that cannot show its filter does
-// not listen.
+// confine installs the filter first thing in serve and checks what the kernel shows. Where there is
+// no filter to install it says so and serve goes on; where anything fails, serve does not start: a
+// daemon that cannot show its filter and its capability sets does not listen.
 func confine() {
-	n, err := confineSeccomp()
-	switch {
-	case errors.Is(err, errNoSeccomp):
-		log.Printf("openwrt-mcp: no seccomp filter on this platform")
-	case err != nil:
-		log.Fatalf("openwrt-mcp: seccomp: %v", err)
-	default:
-		if capabilitiesRequired(os.Geteuid()) {
-			status, rerr := os.ReadFile("/proc/self/status")
-			if rerr == nil {
-				rerr = checkCapabilities(status, expectedCaps)
-			}
-			if rerr != nil {
-				log.Fatalf("openwrt-mcp: capabilities: %v", rerr)
+	n, serr := confineSeccomp()
+	status, rerr := os.ReadFile("/proc/self/status")
+	note, err := confineVerdict(n, serr, status, rerr, os.Geteuid())
+	if err != nil {
+		log.Fatalf("openwrt-mcp: %v", err)
+	}
+	log.Printf("openwrt-mcp: %s", note)
+}
+
+// confineVerdict decides what serve does. Root is held to the capability sets and to no_new_privs
+// whatever happened to the filter: on a platform with no filter (arm32, mips) the daemon starts only
+// if procd applied both, so a router without ujail does not run it with every capability.
+func confineVerdict(n int, serr error, status []byte, rerr error, euid int) (string, error) {
+	noFilter := errors.Is(serr, errNoSeccomp)
+	if serr != nil && !noFilter {
+		return "", fmt.Errorf("seccomp: %w", serr)
+	}
+	if capabilitiesRequired(euid) {
+		if rerr != nil {
+			return "", fmt.Errorf("capabilities: /proc/self/status cannot be read: %w", rerr)
+		}
+		if err := checkCapabilities(status, expectedCaps); err != nil {
+			return "", fmt.Errorf("capabilities: %w", err)
+		}
+		if noFilter {
+			if err := checkNoNewPrivs(status); err != nil {
+				return "", err
 			}
 		}
-		log.Printf("openwrt-mcp: seccomp filter on: %d system calls denied, clone3 refused, namespace clones killed", n)
 	}
+	if noFilter {
+		return "no seccomp filter on this platform", nil
+	}
+	return fmt.Sprintf("seccomp filter on: %d system calls denied, clone3 refused, namespace clones and x32 numbers killed", n), nil
+}
+
+// checkNoNewPrivs requires NoNewPrivs 1 in the text of /proc/self/status.
+func checkNoNewPrivs(status []byte) error {
+	for _, line := range strings.Split(string(status), "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok && k == "NoNewPrivs" && strings.TrimSpace(v) == "1" {
+			return nil
+		}
+	}
+	return errors.New("NoNewPrivs is not 1 and there is no filter to set it: procd did not apply no_new_privs")
 }
 
 // DeniedNames reads seccomp/denied.txt: blank lines and lines starting with # drop out, trailing

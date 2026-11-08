@@ -47,11 +47,12 @@ Feature: the daemon runs with a narrowed kernel surface
     When the capability file or the daemon's expected mask changes
     Then the two still name the same nine capabilities
 
-  # bound to: TestDaemonRefusesToListenUnlessProcdAppliedTheCapabilities, TestCapabilitySetsAreRequiredOfRootAndOnlyOfRoot
+  # bound to: TestDaemonRefusesToListenUnlessProcdAppliedTheCapabilities, TestCapabilitySetsAreRequiredOfRootAndOnlyOfRoot, TestRootOnAPlatformWithNoFilterStillNeedsTheCapabilitiesAndNoNewPrivs
   Scenario: the daemon does not listen when procd did not apply the capabilities
     When the bounding or the effective set of the daemon is not the expected one, or is not shown
     Then the daemon refuses to start, so a router without ujail does not run it with every capability
     And a daemon that is not root, as in the tests that run the binary, is not held to the sets
+    And on a platform with no seccomp filter root still needs the capability sets and no_new_privs, and only then starts
 
   # bound to: TestSeccompIsInstalledByTheDaemonBeforeItReadsAnything
   Scenario: the filter is the daemon's own, and goes on before the configuration is read

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -231,5 +233,41 @@ func TestCapabilitySetsAreRequiredOfRootAndOnlyOfRoot(t *testing.T) {
 		if capabilitiesRequired(euid) {
 			t.Errorf("uid %d is held to the capability sets, so serve cannot run unprivileged", euid)
 		}
+	}
+}
+
+// A platform with no filter (arm32, mips) still holds root to the capability sets and to no_new_privs.
+func TestRootOnAPlatformWithNoFilterStillNeedsTheCapabilitiesAndNoNewPrivs(t *testing.T) {
+	const good = capsStatusOK + "NoNewPrivs:\t1\n"
+	const full = "CapBnd:\t000001ffffffffff\nCapEff:\t000001ffffffffff\nNoNewPrivs:\t1\n"
+	const noNNP = capsStatusOK + "NoNewPrivs:\t0\n"
+	for name, tc := range map[string]struct {
+		status string
+		rerr   error
+		euid   int
+		ok     bool
+	}{
+		"root, right capabilities and no_new_privs": {good, nil, 0, true},
+		"root, every capability":                    {full, nil, 0, false},
+		"root, no_new_privs 0":                      {noNNP, nil, 0, false},
+		"root, status unreadable":                   {"", errors.New("no /proc"), 0, false},
+		"not root, nothing shown":                   {"", errors.New("no /proc"), 1000, true},
+		"not root, every capability":                {full, nil, 1000, true},
+	} {
+		_, err := confineVerdict(0, errNoSeccomp, []byte(tc.status), tc.rerr, tc.euid)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err=%v, want ok=%v", name, err, tc.ok)
+		}
+	}
+	// With a filter the same capability rule holds, and a filter that failed to go on is fatal.
+	if _, err := confineVerdict(40, nil, []byte("CapBnd:\t000001ffffffffff\nCapEff:\t000001ffffffffff\n"), nil, 0); err == nil {
+		t.Error("root with every capability and a filter was allowed to listen")
+	}
+	if _, err := confineVerdict(0, errors.New("seccomp: invalid argument"), []byte(capsStatusOK), nil, 0); err == nil {
+		t.Error("a filter that failed to install was allowed to listen")
+	}
+	note, err := confineVerdict(0, errNoSeccomp, []byte(good), nil, 0)
+	if err != nil || !strings.Contains(note, "no seccomp filter on this platform") {
+		t.Errorf("note %q err %v", note, err)
 	}
 }
