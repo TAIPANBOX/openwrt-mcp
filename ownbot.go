@@ -810,7 +810,8 @@ func (b *ownerBot) cardsLoop(ctx context.Context) {
 
 // sync brings the chat in line with the held changes. A card Telegram does not take is set aside with
 // a wait of its own, which doubles each time up to five minutes, and the pass goes on: one card never
-// holds back another. Callers hold b.mu.
+// holds back another. When Telegram does not answer at all, the rest of the pass sends nothing, since
+// each card would only wait the same timeout with b.mu held. Callers hold b.mu.
 func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 	b.owner = b.f.chat()
 	if b.owner == 0 || !b.s.ownerBotChannel() {
@@ -821,10 +822,13 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 	present := map[string]bool{}
 	for _, v := range views {
 		present[v.ID] = true
+	}
+	offline := false
+	for _, v := range views {
 		c := b.cards[v.ID]
 		switch {
 		case c == nil && v.Status == statusHeld:
-			if r, waiting := b.retry[v.ID]; waiting && now < r.next {
+			if r, waiting := b.retry[v.ID]; offline || (waiting && now < r.next) {
 				continue
 			}
 			text, cut := cardMessage(v.Card)
@@ -837,21 +841,24 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 			cancel()
 			if err != nil {
 				b.noteLocked("", fmt.Errorf("the card of %s: %w", v.ID, err))
+				offline = !telegramRefused(err)
 				b.later(v.ID, now)
 				continue
 			}
 			delete(b.retry, v.ID)
 			b.cards[v.ID] = &botCard{id: v.ID, hash: v.Hash, msgID: id, text: text, cut: cut}
 			b.byMsg[id] = v.ID
-		case c != nil && !c.final && v.Status != statusHeld && v.Status != statusApproving:
-			b.closeCard(ctx, tc, c, outcomeLine(v), now)
+		case c != nil && !c.final && v.Status != statusHeld && v.Status != statusApproving && !offline:
+			if err := b.closeCard(ctx, tc, c, outcomeLine(v), now); err != nil && !telegramRefused(err) {
+				offline = true
+			}
 		}
 	}
 	for id, c := range b.cards {
 		if present[id] {
 			continue
 		}
-		if !c.final {
+		if !c.final && !offline {
 			b.closeCard(ctx, tc, c, "No longer waiting.", now)
 		}
 		delete(b.byMsg, c.msgID)
@@ -879,10 +886,10 @@ func (b *ownerBot) later(key string, now time.Duration) {
 
 // closeCard edits a card with its outcome and takes its buttons away; an edit Telegram does not take
 // waits like a card. Callers hold b.mu.
-func (b *ownerBot) closeCard(ctx context.Context, tc *telegramClient, c *botCard, line string, now time.Duration) {
+func (b *ownerBot) closeCard(ctx context.Context, tc *telegramClient, c *botCard, line string, now time.Duration) error {
 	key := "edit:" + c.id
 	if r, waiting := b.retry[key]; waiting && now < r.next {
-		return
+		return nil
 	}
 	text, _ := fitUnits(c.text+"\n\n"+line, telegramTextUnits)
 	cctx, cancel := context.WithTimeout(ctx, telegramCallWait)
@@ -890,13 +897,20 @@ func (b *ownerBot) closeCard(ctx context.Context, tc *telegramClient, c *botCard
 	if err := tc.edit(cctx, b.owner, c.msgID, text); err != nil {
 		b.noteLocked("", fmt.Errorf("the card of %s: %w", c.id, err))
 		b.later(key, now)
-		return
+		return err
 	}
 	delete(b.retry, key)
 	c.final = true
 	if b.prompt != nil && b.prompt.id == c.id {
 		b.prompt = nil
 	}
+	return nil
+}
+
+// telegramRefused says whether Telegram answered and said no, rather than not answering.
+func telegramRefused(err error) bool {
+	var te *telegramError
+	return errors.As(err, &te)
 }
 
 // utf16Units is a text's length as Telegram counts it.
