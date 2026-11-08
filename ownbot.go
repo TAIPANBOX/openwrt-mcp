@@ -20,7 +20,8 @@ package main
 // The files, each with one writer, in /etc/openwrt-mcp/owner-bot (0700, each 0600):
 //
 //	token  the bot's token                       the CLI (owner-bot set, from standard input)
-//	bind   SHA-256 of a one-time binding code    the CLI (owner-bot bind); the helper removes it
+//	bind   SHA-256 of a one-time binding code,   the CLI (owner-bot bind); the helper removes it
+//	       and the moment it ends
 //	chat   the bound chat's id                   the helper, when the code arrives
 //	seen   the bot's name and its last error     the helper, for status; it decides nothing
 
@@ -50,7 +51,19 @@ const (
 	bindCodeLife  = 30 * time.Minute
 	promptLife    = 180 * time.Second
 	cardsInterval = 3 * time.Second
+
+	// Telegram counts a message's length in UTF-16 units, at most 4096. A card leaves room for the
+	// line its outcome adds; a card that does not fit is refused when it is held (approval.go).
+	telegramTextUnits = 4096
+	outcomeReserve    = 400
+	maxCardUnits      = telegramTextUnits - outcomeReserve
+	cardRetryFirst    = 5 * time.Second
+	cardRetryMax      = 5 * time.Minute
 )
+
+// ownerBotWall is the wall clock a binding code's end is written and read by. A variable only so a
+// test can move it.
+var ownerBotWall = time.Now
 
 // botTokenShape is what BotFather hands out: the bot's id, a colon, and the secret.
 var botTokenShape = regexp.MustCompile(`^[0-9]{5,16}:[A-Za-z0-9_-]{30,80}$`)
@@ -101,17 +114,34 @@ func (f ownerBotFiles) chat() int64 {
 	return n
 }
 
-// bindHash is the SHA-256 of the binding code waiting to be sent, or "".
-func (f ownerBotFiles) bindHash() string {
-	h := f.read("bind", 128)
-	if len(h) != 64 {
-		return ""
+// bindEntry is the SHA-256 of the binding code waiting to be sent and the moment it ends, as
+// `owner-bot bind` wrote them. ok is false for no file, or one that does not read.
+func (f ownerBotFiles) bindEntry() (hash string, ends time.Time, ok bool) {
+	fs := strings.Fields(f.read("bind", 128))
+	if len(fs) != 2 || len(fs[0]) != 64 {
+		return "", time.Time{}, false
 	}
-	if _, err := hex.DecodeString(h); err != nil {
+	if _, err := hex.DecodeString(fs[0]); err != nil {
+		return "", time.Time{}, false
+	}
+	n, err := strconv.ParseInt(fs[1], 10, 64)
+	if err != nil || n <= 0 {
+		return "", time.Time{}, false
+	}
+	return fs[0], time.Unix(n, 0), true
+}
+
+// bindHash is the SHA-256 of a binding code that is waiting and has not ended, or "".
+func (f ownerBotFiles) bindHash() string {
+	h, ends, ok := f.bindEntry()
+	if !ok || bindEnded(ends) {
 		return ""
 	}
 	return h
 }
+
+// bindEnded says whether a binding code's own end, written in its file, has come.
+func bindEnded(ends time.Time) bool { return !ownerBotWall().Before(ends) }
 
 func (f ownerBotFiles) write(name, body string) error {
 	if err := os.MkdirAll(f.dir, 0o700); err != nil {
@@ -208,6 +238,7 @@ type botCard struct {
 	msgID    int64
 	text     string
 	final    bool
+	cut      bool // too long for one message: shown cut, and never approved from the chat
 }
 
 type botPrompt struct {
@@ -231,8 +262,12 @@ type ownerBot struct {
 	byMsg    map[int64]string    // message id -> record id
 	prompt   *botPrompt
 	bindSeen map[string]time.Duration // bind hash -> when the helper first saw it
+	retry    map[string]botRetry      // a card Telegram did not take, by record id ("edit:" for its edit)
 	seen     botSeen
 }
+
+// botRetry is when a card that Telegram did not take is tried again, and the wait after that.
+type botRetry struct{ next, wait time.Duration }
 
 // startOwnerBot starts the bot's two loops: one reads the updates, one sends and closes cards. Both
 // idle while no token is set.
@@ -249,8 +284,14 @@ func (s *Server) startOwnerBot(ctx context.Context, opt ownerBotOptions) *ownerB
 		host = "this router"
 	}
 	b := &ownerBot{s: s, f: ownerBotFilesOf(s.statePath), opt: opt, host: host, notify: make(chan struct{}, 1),
-		cards: map[string]*botCard{}, byMsg: map[int64]string{}, bindSeen: map[string]time.Duration{}}
+		cards: map[string]*botCard{}, byMsg: map[int64]string{}, bindSeen: map[string]time.Duration{},
+		retry: map[string]botRetry{}}
 	b.seen = b.f.seen()
+	// A code that lay on disk while the helper was not running is judged by the end written in it,
+	// and one that has ended is removed before anything is read.
+	b.mu.Lock()
+	b.watchBind()
+	b.mu.Unlock()
 	s.bot.Store(b)
 	go b.poll(ctx)
 	go b.cardsLoop(ctx)
@@ -267,7 +308,7 @@ func (b *ownerBot) client() (*telegramClient, bool) {
 		return b.tc, false
 	}
 	b.token, b.tc, b.prompt = tok, nil, nil
-	b.cards, b.byMsg = map[string]*botCard{}, map[int64]string{}
+	b.cards, b.byMsg, b.retry = map[string]*botCard{}, map[int64]string{}, map[string]botRetry{}
 	if tok != "" {
 		b.tc = newTelegramClient(tok, pipeDialer{path: b.opt.relay, uid: b.opt.relayUID, peer: b.opt.peer}, b.opt.roots)
 	}
@@ -509,19 +550,24 @@ func startCode(text string) (string, bool) {
 	return "", false
 }
 
-// watchBind starts a binding code's life when the helper first sees it, and removes it once that
-// life is over. Callers hold b.mu.
+// watchBind removes a binding code whose life is over: at the end `owner-bot bind` wrote in its file,
+// or 30 minutes of the helper's own clock after the helper first saw it, whichever comes first. The
+// second bound holds when the wall clock is wrong; the first holds across a restart, which starts the
+// helper's own clock again. Callers hold b.mu.
 func (b *ownerBot) watchBind() {
-	h := b.f.bindHash()
-	if h == "" {
-		return
-	}
-	first, ok := b.bindSeen[h]
+	h, ends, ok := b.f.bindEntry()
 	if !ok {
-		b.bindSeen[h] = b.opt.mono()
+		if _, err := os.Stat(b.f.path("bind")); err == nil {
+			b.f.remove("bind") // a file that does not read binds nothing
+		}
 		return
 	}
-	if b.opt.mono()-first >= bindCodeLife {
+	first, seen := b.bindSeen[h]
+	if !seen {
+		first = b.opt.mono()
+		b.bindSeen[h] = first
+	}
+	if bindEnded(ends) || b.opt.mono()-first >= bindCodeLife {
 		b.f.remove("bind")
 		delete(b.bindSeen, h)
 		log.Printf("openwrt-mcp: the router's bot: a binding code ran out unused")
@@ -532,11 +578,11 @@ func (b *ownerBot) watchBind() {
 // Callers hold b.mu.
 func (b *ownerBot) tryBind(ctx context.Context, tc *telegramClient, m *tgMessage, code string) bool {
 	b.watchBind()
-	h := b.f.bindHash()
-	if h == "" {
+	h, ends, ok := b.f.bindEntry()
+	if !ok || bindEnded(ends) {
 		return false
 	}
-	if b.opt.mono()-b.bindSeen[h] >= bindCodeLife {
+	if first, seen := b.bindSeen[h]; !seen || b.opt.mono()-first >= bindCodeLife {
 		return false
 	}
 	sum := sha256.Sum256([]byte(code))
@@ -551,7 +597,7 @@ func (b *ownerBot) tryBind(ctx context.Context, tc *telegramClient, m *tgMessage
 	b.f.remove("bind")
 	delete(b.bindSeen, h)
 	b.owner, b.prompt = m.Chat.ID, nil
-	b.cards, b.byMsg = map[string]*botCard{}, map[int64]string{}
+	b.cards, b.byMsg, b.retry = map[string]*botCard{}, map[int64]string{}, map[string]botRetry{}
 	revoked := b.s.revokeApprovers()
 	summary := "the router's chat is bound"
 	if len(revoked) > 0 {
@@ -611,6 +657,10 @@ func (b *ownerBot) press(ctx context.Context, tc *telegramClient, cb *tgCallback
 	}
 	switch m[1] {
 	case "a":
+		if card.cut {
+			reply("This card was too long to show whole, so it is not approved from the chat.")
+			return
+		}
 		b.prompt = &botPrompt{id: card.id, hash: card.hash, until: b.opt.mono() + promptLife}
 		reply("")
 		b.say(ctx, tc, b.owner, promptText(v, b.s.approvalFactor(v.Client)))
@@ -758,12 +808,15 @@ func (b *ownerBot) cardsLoop(ctx context.Context) {
 	}
 }
 
-// sync brings the chat in line with the held changes. Callers hold b.mu.
+// sync brings the chat in line with the held changes. A card Telegram does not take is set aside with
+// a wait of its own, which doubles each time up to five minutes, and the pass goes on: one card never
+// holds back another. Callers hold b.mu.
 func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 	b.owner = b.f.chat()
 	if b.owner == 0 || !b.s.ownerBotChannel() {
 		return
 	}
+	now := b.opt.mono()
 	views := b.s.views(b.s.cfg().approvalClients(), true, time.Now())
 	present := map[string]bool{}
 	for _, v := range views {
@@ -771,18 +824,27 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 		c := b.cards[v.ID]
 		switch {
 		case c == nil && v.Status == statusHeld:
+			if r, waiting := b.retry[v.ID]; waiting && now < r.next {
+				continue
+			}
+			text, cut := cardMessage(v.Card)
+			row := []tgButton{{Text: "Approve", Data: cardData('a', v.ID, v.Hash)}, {Text: "Reject", Data: cardData('r', v.ID, v.Hash)}}
+			if cut {
+				row = row[1:] // a card the owner cannot read whole is not approved from the chat
+			}
 			cctx, cancel := context.WithTimeout(ctx, telegramCallWait)
-			id, err := tc.send(cctx, b.owner, v.Card, &tgKeyboard{Rows: [][]tgButton{{
-				{Text: "Approve", Data: cardData('a', v.ID, v.Hash)}, {Text: "Reject", Data: cardData('r', v.ID, v.Hash)}}}})
+			id, err := tc.send(cctx, b.owner, text, &tgKeyboard{Rows: [][]tgButton{row}})
 			cancel()
 			if err != nil {
-				b.noteLocked("", err)
-				return // the next tick tries again
+				b.noteLocked("", fmt.Errorf("the card of %s: %w", v.ID, err))
+				b.later(v.ID, now)
+				continue
 			}
-			b.cards[v.ID] = &botCard{id: v.ID, hash: v.Hash, msgID: id, text: v.Card}
+			delete(b.retry, v.ID)
+			b.cards[v.ID] = &botCard{id: v.ID, hash: v.Hash, msgID: id, text: text, cut: cut}
 			b.byMsg[id] = v.ID
 		case c != nil && !c.final && v.Status != statusHeld && v.Status != statusApproving:
-			b.closeCard(ctx, tc, c, outcomeLine(v))
+			b.closeCard(ctx, tc, c, outcomeLine(v), now)
 		}
 	}
 	for id, c := range b.cards {
@@ -790,10 +852,15 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 			continue
 		}
 		if !c.final {
-			b.closeCard(ctx, tc, c, "No longer waiting.")
+			b.closeCard(ctx, tc, c, "No longer waiting.", now)
 		}
 		delete(b.byMsg, c.msgID)
 		delete(b.cards, id)
+	}
+	for id := range b.retry {
+		if v := strings.TrimPrefix(id, "edit:"); !present[v] {
+			delete(b.retry, id)
+		}
 	}
 	if b.prompt != nil {
 		if v, ok := b.s.heldView(b.prompt.id); !ok || v.Status != statusHeld {
@@ -802,15 +869,77 @@ func (b *ownerBot) sync(ctx context.Context, tc *telegramClient) {
 	}
 }
 
-func (b *ownerBot) closeCard(ctx context.Context, tc *telegramClient, c *botCard, line string) {
+// later sets a card aside after Telegram did not take it. Callers hold b.mu.
+func (b *ownerBot) later(key string, now time.Duration) {
+	r := b.retry[key]
+	r.wait = min(max(r.wait*2, cardRetryFirst), cardRetryMax)
+	r.next = now + r.wait
+	b.retry[key] = r
+}
+
+// closeCard edits a card with its outcome and takes its buttons away; an edit Telegram does not take
+// waits like a card. Callers hold b.mu.
+func (b *ownerBot) closeCard(ctx context.Context, tc *telegramClient, c *botCard, line string, now time.Duration) {
+	key := "edit:" + c.id
+	if r, waiting := b.retry[key]; waiting && now < r.next {
+		return
+	}
+	text, _ := fitUnits(c.text+"\n\n"+line, telegramTextUnits)
 	cctx, cancel := context.WithTimeout(ctx, telegramCallWait)
 	defer cancel()
-	if err := tc.edit(cctx, b.owner, c.msgID, c.text+"\n\n"+line); err == nil {
-		c.final = true
-		if b.prompt != nil && b.prompt.id == c.id {
-			b.prompt = nil
+	if err := tc.edit(cctx, b.owner, c.msgID, text); err != nil {
+		b.noteLocked("", fmt.Errorf("the card of %s: %w", c.id, err))
+		b.later(key, now)
+		return
+	}
+	delete(b.retry, key)
+	c.final = true
+	if b.prompt != nil && b.prompt.id == c.id {
+		b.prompt = nil
+	}
+}
+
+// utf16Units is a text's length as Telegram counts it.
+func utf16Units(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
 		}
 	}
+	return n
+}
+
+// fitUnits cuts s, at a whole character, to at most max UTF-16 units, and says whether it cut.
+func fitUnits(s string, max int) (string, bool) {
+	n := 0
+	for i, r := range s {
+		w := 1
+		if r >= 0x10000 {
+			w = 2
+		}
+		if n+w > max {
+			return s[:i], true
+		}
+		n += w
+	}
+	return s, false
+}
+
+// cardCutNote ends a card that did not fit one message.
+const cardCutNote = "\n\n[This card is too long for one message and is cut here, so it is not approved from the " +
+	"chat. Reject it, and let it be proposed in smaller parts.]"
+
+// cardMessage is the text a card is sent as: the record's card whole when it fits, with room for its
+// outcome, or cut with a note saying so. The record keeps the whole card in the helper either way.
+func cardMessage(card string) (string, bool) {
+	if utf16Units(card) <= maxCardUnits {
+		return card, false
+	}
+	head, _ := fitUnits(card, maxCardUnits-utf16Units(cardCutNote))
+	return head + cardCutNote, true
 }
 
 func outcomeLine(v actionView) string {

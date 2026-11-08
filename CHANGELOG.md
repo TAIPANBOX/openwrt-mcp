@@ -20,7 +20,9 @@ approval section. A router with no bot bound keeps today's path.
   socket.
 - In the owner's chat: the card with Approve and Reject, a prompt of 180 seconds after Approve, the
   factor's message deleted before it is read, `/unlock PIN code` and `/lock`, and the card edited with
-  each outcome.
+  each outcome. A card Telegram does not take waits with a delay of its own while the others go out.
+- A held change whose card would not fit one Telegram message (3696 UTF-16 units, room left for the
+  outcome) is refused, as a card over 3500 characters always was.
 - `owner_approves_past_the_listener` in `status --json`'s capabilities; `owner_bot` and each approval's
   `channel` in the report.
 - Invariant 13, `scripts/gate-ownbot.sh` with its teeth, `scripts/mutate-ownbot.py`,

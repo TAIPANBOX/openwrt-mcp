@@ -397,8 +397,10 @@ routes the owner's factor back through the listener and must turn it red.
   is bound, approvals work as before, so setting the bot up never leaves a gap.
 - **Binding the chat.** `openwrt-mcp owner-bot bind` makes a one-time code of 128 bits and prints it
   with the link `https://t.me/<bot>?start=<code>`. LuCI shows that link, so pressing Start sends the
-  code and the owner types nothing. The helper takes the code for 30 minutes of its own monotonic
-  clock from when it first sees it, binds the private chat that sends it, and removes it. Until then
+  code and the owner types nothing. `owner-bot bind` writes the code's end in its file, 30 minutes on;
+  the helper takes the code until that end and for at most 30 minutes of its own monotonic clock from
+  when it first sees it, binds the private chat that sends it, and removes it. A code past its end is
+  removed as the helper starts, so a restart gives it no new life. Until then
   the bot answers nobody, and a wrong code, a group or a channel gets no answer at all.
 - **Files.** `/etc/openwrt-mcp/owner-bot/`, root's, `0700`, each file `0600` with one writer: `token`
   (the CLI, from standard input), `bind` (the CLI writes the code's SHA-256, the helper removes it),
@@ -412,6 +414,14 @@ routes the owner's factor back through the listener and must turn it red.
   counts nothing. `/unlock PIN code` and `/lock` work as they did in the agent's chat; with more than
   one approval section they name the client first. The outcome edits the card, and so does an
   expiry, a withdrawal or a `/lock`.
+- **A card is one message.** Telegram counts a message in UTF-16 units, at most 4096, so a change whose
+  card would not fit one message whole, with room for its outcome, is refused when it is held, as an
+  over-long card always was. A card Telegram does not take for any reason waits with a delay of its
+  own, doubling up to five minutes, while the other cards go out. One that reaches the bot too long
+  anyway goes out cut, says so, and offers only Reject; the record keeps the whole card in the helper.
+- **Reject, a withdrawal, a new bot.** Reject is one tap and takes no factor; a change the agent
+  withdraws, or that expires, has its card edited to say so. A new token drops the bound chat, so a new
+  bot is bound again with a new code; the same token given again changes nothing.
 - **A restart.** Held changes and prompts live in memory, so a restart drops them, as before. What
   reached the bot while the helper was not reading is read once at its start and never acted on: a
   message that looks like a factor is deleted, and the owner is told it was not used.

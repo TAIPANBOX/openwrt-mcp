@@ -397,6 +397,13 @@ func (s *Server) hold(client, tool string, input any, scopes, argv []string, cl 
 			"the most is %d), and a card is never cut short; split it into smaller changes; nothing was applied",
 			utf8.RuneCountInString(h.Card), maxCardRunes)
 	}
+	// The card goes to the owner as one Telegram message (ownbot.go), and Telegram counts in UTF-16
+	// units, so a card of wide characters can be short in characters and still not fit.
+	if units := utf16Units(h.Card); units > maxCardUnits {
+		return nil, fmt.Sprintf("refused: this change is too long to show the owner in one message (%d units as "+
+			"Telegram counts them, the most is %d), and a card is never cut short; split it into smaller changes; "+
+			"nothing was applied", units, maxCardUnits)
+	}
 	st.byID[h.ID] = h
 	st.proposed[client] = append(st.proposed[client], now)
 	s.notifyBot()

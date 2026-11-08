@@ -126,9 +126,11 @@ before the 2026-10-17 security wave, so the numbering starts here.
     chat, on the message the helper sent for a record still held. The factor is the next message after
     Approve, within 180 seconds, deleted before it is read, and runs the order of checks
     `action_approve` runs, the factor last and its step spent; a factor with no prompt, after the
-    prompt closed, or sent while the helper was not reading counts nothing. A chat is bound only by the
-    one-time code `owner-bot bind` makes, within 30 minutes of the helper's own clock, and until then
-    the bot answers nobody. While a chat is bound, no MCP client lists, approves, rejects, unlocks or
+    prompt closed, or sent while the helper was not reading counts nothing. A card is one Telegram
+    message: a change whose card would not fit one whole is refused when it is held, a card is never
+    cut for the owner to approve, and one card Telegram refuses never holds back another. A chat is
+    bound only by the one-time code `owner-bot bind` makes, before the end written in its file and
+    within 30 minutes of the helper's own clock, and until then the bot answers nobody. While a chat is bound, no MCP client lists, approves, rejects, unlocks or
     locks for an approval section, and binding revokes the approver clients' tokens. The bot's token is
     in no error and no file but its own. A router with no bot bound keeps the MCP approver path, and
     the listener then carries its factor (`docs/privilege-split.md`). `@decided 2026-11-08`: the

@@ -285,7 +285,8 @@ The card is the daemon's. It is written from the record: a headline built from p
 (addresses through `netip`, ports as numbers, anything else shown as unreadable), then every changed
 key with its value before and after. A secret's value reads `<redacted>`; whatever the client chose
 is quoted after its key with anything unprintable escaped, so a right-to-left override or a line
-break cannot reorder or forge a line. A card over 3500 characters is refused, never cut short:
+break cannot reorder or forge a line. A card over 3500 characters, or over 3696 units as Telegram counts
+them (UTF-16, so it fits one message with room for its outcome), is refused, never cut short:
 
 ```
 Router change waiting for you (KQWPT, ref 3f9a12c0, expires in 10 min)
@@ -350,7 +351,8 @@ openwrt-mcp owner-bot clear             # back to the owner's client
 
 Pressing Start on the link sends the code, and the private chat that sends it is bound. Until then the
 bot answers nobody, and the code works once, for 30 minutes of the helper's own clock from when it first
-sees it. Then, in that chat:
+sees it; `owner-bot bind` writes that end in the code's file, and a code past it is removed as the
+helper starts. Then, in that chat:
 
 | The owner | The router |
 |---|---|
@@ -360,8 +362,9 @@ sees it. Then, in that chat:
 | taps Reject | rejects it |
 | sends `/unlock PIN code` or `/lock` | deletes the message, then opens or closes the agent's window |
 
-A tap counts only from the bound chat, on the message the helper sent for a record still held. A
-message that looks like a factor with no prompt open, after the prompt closed, or sent while the helper
+A tap counts only from the bound chat, on the message the helper sent for a record still held. A card
+Telegram does not take waits with a delay of its own while the others go out. A message that looks
+like a factor with no prompt open, after the prompt closed, or sent while the helper
 was not reading is deleted and counts nothing. While a chat is bound, `action_list`, `action_approve`,
 `action_reject`, and `mfa_unlock` and `mfa_lock` naming another client are refused over MCP before
 anything is looked up, and binding revokes the tokens of the clients named as approvers.

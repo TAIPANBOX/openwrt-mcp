@@ -3,6 +3,7 @@
 Every figure here comes from a run: on a router, in OpenWrt's own published images in CI, or in the
 test suite. Newest first, each with its date, the machine and what it showed.
 
+- [The owner's approval through the router's own bot](#the-owners-approval-through-the-routers-own-bot)
 - [The split of privileges](#the-split-of-privileges)
 - [The guess throttle](#the-guess-throttle)
 - [The suite and its gates](#the-suite-and-its-gates)
@@ -12,6 +13,30 @@ test suite. Newest first, each with its date, the machine and what it showed.
 - [Mutation checks](#mutation-checks)
 - [On GL.iNet firmware](#on-glinet-firmware)
 - [The vendor `gl-*` objects on a Flint 4](#the-vendor-objects-on-a-flint-4)
+
+## The owner's approval through the router's own bot
+
+Run on 2026-11-08 on a virtual OpenWrt 25.12.5 x86_64 router (vlab on a Debian 13 host, QEMU/KVM), with
+`scripts/e2e-vlab.sh`: the helper as procd started it, and in the listener's place a hostile one, run
+as the account `openwrt-mcp` (uid 32768, CapEff 0, Seccomp 2) under the listener's filter, holding the
+agent's and the owner's tokens and serving the pipe to Telegram with the listener's own dial, recording
+every byte. Telegram was a stand-in on 127.0.0.1:443 with a certificate from a CA made for the run;
+`/etc/hosts` sent `api.telegram.org` there and the router's trust store held that CA alone while the run
+lasted. No real bot or token took part.
+
+| Measured | This tree | origin/main (the red run, `--daemon`) |
+|---|---|---|
+| the owner's chat bound by the one-time code | in 1.5 s | (no bot) |
+| the card in the owner's chat after the hold | 4 ms | (the card went through the listener) |
+| the change the owner approved | applied | held |
+| the listener's own change, with the owner's factor moved onto it | held, never ran | applied |
+| bytes the pipe carried | 18,539 | 0 |
+| of 10 secrets looked for in them (the PIN and code, the unlock, the token, a card, a Bot API request) | 0 in clear | |
+| the helper's IP sockets | 0 (3 Unix sockets), NoNewPrivs 1, Seccomp 2, CapEff `30fb` | 0 |
+
+The same run passed TestJailVlab's 22 subtests on this tree. In the test suite on the same host:
+`mutate-ownbot.py` caught every mutant by the test named for it, `FuzzTelegramUpdates` ran 1,392,133
+inputs in two minutes with no failure, and the package's statement coverage read 88.9%.
 
 ## The split of privileges
 

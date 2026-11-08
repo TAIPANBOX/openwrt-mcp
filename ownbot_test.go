@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -546,4 +547,111 @@ func fileMode(t *testing.T, p string) os.FileMode {
 		t.Fatal(err)
 	}
 	return st.Mode().Perm()
+}
+
+// A binding code ends at the end `owner-bot bind` wrote in its file: one that lay on disk while the
+// helper was stopped, past that end, is removed as the helper starts and binds nothing, however new the
+// helper's own clock is. A code made then binds.
+func TestABindingCodeEndsOnTimeAcrossARestart(t *testing.T) {
+	r := newBotRig(t, "")
+	code := r.bindCode()
+	r.cancel()
+	waitFor(t, "the bot to stop reading", 30*time.Second, func() bool { return r.tg.polling.Load() == 0 })
+	later := time.Now().Add(31 * time.Minute)
+	ownerBotWall = func() time.Time { return later }
+	t.Cleanup(func() { ownerBotWall = time.Now })
+	r.runBot()
+	if _, err := os.Stat(ownerBotFilesOf(r.state).path("bind")); err == nil {
+		t.Fatal("a binding code past its end was still on disk once the helper had started")
+	}
+	r.tg.say(testOwner, testOwner, "private", "/start "+code)
+	never(t, "a binding code past its end bound a chat", 1500*time.Millisecond, func() bool {
+		return ownerBotFilesOf(r.state).chat() != 0 || len(r.tg.sentTo(testOwner)) > 0
+	})
+	r.bind()
+}
+
+// A card Telegram does not take is set aside with a wait of its own, and the cards after it still go
+// out; once Telegram takes it, it goes out too.
+func TestACardTelegramRefusesDoesNotHoldBackTheNext(t *testing.T) {
+	r := newBotRig(t, "")
+	r.bind()
+	var refusing atomic.Bool
+	refusing.Store(true)
+	a := r.heldUbus("board")
+	r.tg.mu.Lock()
+	r.tg.refuse = func(text string) bool { return refusing.Load() && strings.Contains(text, "("+a+",") }
+	r.tg.mu.Unlock()
+	waitFor(t, "the bot to note the refused card", 10*time.Second, func() bool {
+		return strings.Contains(ownerBotFilesOf(r.state).seen().Error, "sendMessage")
+	})
+	b := r.heldUbus("info")
+	r.cardOf(b)
+	refusing.Store(false)
+	r.mono.add(cardRetryMaxInTest)
+	r.bot.signal()
+	r.cardOf(a)
+}
+
+// cardRetryMaxInTest is the longest wait a set-aside card has, as a number: a test that read the
+// constant would move with it.
+const cardRetryMaxInTest = 5 * time.Minute
+
+// injectHeld puts a record with the card given straight into the helper's held changes, as hold would
+// keep it, for a card hold itself would no longer make.
+func (r *botRig) injectHeld(body string) string {
+	r.t.Helper()
+	st := r.s.held
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := time.Now()
+	h := &heldAction{ID: heldID(), Client: "a", Tool: "ubus_call",
+		Input:  normalisedInput(ubusCallIn{Object: "system", Method: "board"}),
+		Scopes: []string{"system.board"}, Headlines: []string{"WAITS FOR YOUR APPROVAL BY POLICY: ubus_call system.board"},
+		Created: now, Expires: now.Add(10 * time.Minute), Status: statusHeld}
+	h.cardBase = "Router change waiting for you (" + h.ID + ", expires in 10 min)\n" + body
+	h.Hash = h.computeHash()
+	h.Card = h.cardBase
+	st.byID[h.ID] = h
+	r.s.notifyBot()
+	return h.ID
+}
+
+// A card too long for one Telegram message goes out cut to fit, says so, and has only Reject: it is
+// not approved from the chat, a forged Approve on it opens nothing, and the cards after it still go out.
+func TestACardTooLongForOneMessageIsCutAndNotApproved(t *testing.T) {
+	r := newBotRig(t, "")
+	r.bind()
+	long := r.injectHeld(strings.Repeat("😀", 2100))
+	b := r.heldUbus("board")
+	card := r.cardOf(long)
+	r.cardOf(b)
+	if unitsOf(card.Text) > 4096 || !strings.Contains(card.Text, "too long for one message") {
+		t.Fatalf("the long card was not cut to fit and marked: %d units", unitsOf(card.Text))
+	}
+	if len(card.Keyboard) != 1 || len(card.Keyboard[0]) != 1 || card.Keyboard[0][0].Text != "Reject" {
+		t.Fatalf("a cut card offers more than Reject: %+v", card.Keyboard)
+	}
+	v, _ := r.s.heldView(long)
+	n := len(r.tg.sentTo(testOwner))
+	r.tg.tap(testOwner, card.ID, "a:"+long+":"+v.Hash[:16])
+	never(t, "a forged Approve on a cut card opened a prompt", 1500*time.Millisecond, func() bool {
+		return len(r.tg.sentTo(testOwner)) > n
+	})
+	r.tg.tap(testOwner, card.ID, card.Keyboard[0][0].Data)
+	waitFor(t, "the cut card to be rejected", 10*time.Second, func() bool {
+		v, _ := r.s.heldView(long)
+		return v.Status == statusRejected
+	})
+}
+
+// A change whose card is short in characters but too long for one message as Telegram counts them is
+// refused when it is held, as an over-long card always was: a card is never cut for the owner to approve.
+func TestAHeldCardMustFitOneTelegramMessage(t *testing.T) {
+	r := newBotRig(t, "")
+	out, isErr := r.ubusCall("system", "board", map[string]any{"note": strings.Repeat("😀", 2000)})
+	if !isErr || !strings.Contains(out, "too long to show the owner in one message") {
+		t.Fatalf("a card over one message was held: %q", out)
+	}
+	r.mustHold(r.ubusCall("system", "board", map[string]any{"note": strings.Repeat("x", 2000)}))
 }

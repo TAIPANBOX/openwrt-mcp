@@ -49,11 +49,24 @@ Feature: the owner approves past the listener, through the router's own bot
     Then only a token's shape is taken, the same token again changes nothing, and a new one drops the bound chat
     And a code needs a token, and clearing the bot gives the approval back to the owner's client
 
-  # bound to: TestABindingCodeRunsOut
+  # bound to: TestABindingCodeRunsOut, TestABindingCodeEndsOnTimeAcrossARestart
   Scenario: a binding code runs out
-    Given a binding code the router made
+    Given a binding code the router made, its end written in its file
     When 30 minutes of the helper's own clock pass from when it first saw the code
     Then the code is removed and binds nothing, and a fresh code binds
+    When the helper starts again after the end written in the file
+    Then the code is removed as the helper starts and binds nothing, however new the helper's own clock is
+
+  # bound to: TestACardTelegramRefusesDoesNotHoldBackTheNext
+  Scenario: a card Telegram refuses does not hold back the next
+    When Telegram does not take one card
+    Then that card waits with a delay of its own while the cards after it go out, and it goes out once Telegram takes it
+
+  # bound to: TestACardTooLongForOneMessageIsCutAndNotApproved, TestAHeldCardMustFitOneTelegramMessage
+  Scenario: a card is never cut for the owner to approve
+    When a change's card would not fit one Telegram message as Telegram counts it
+    Then the change is refused when it is held, as an over-long card always was
+    And a card that reaches the bot too long anyway goes out cut, says so, offers only Reject, and the cards after it still go out
 
   # bound to: TestTheCardIsTheRecordsOwnAndApprovesItsRecordOnly
   Scenario: the card is the helper's own, and one tap and one message approve it

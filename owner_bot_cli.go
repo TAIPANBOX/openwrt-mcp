@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -84,7 +85,10 @@ func runOwnerBot(w io.Writer, stdin io.Reader, statePath string, args []string) 
 		}
 		code := base64.RawURLEncoding.EncodeToString(buf)
 		sum := sha256.Sum256([]byte(code))
-		if err := f.write("bind", hex.EncodeToString(sum[:])+"\n"); err != nil {
+		// The code's end goes in the file, so a code that lies there while the helper is stopped, or
+		// across its restart, ends on time all the same.
+		ends := ownerBotWall().Add(bindCodeLife).Unix()
+		if err := f.write("bind", hex.EncodeToString(sum[:])+" "+strconv.FormatInt(ends, 10)+"\n"); err != nil {
 			return err
 		}
 		link := ""
@@ -101,7 +105,7 @@ func runOwnerBot(w io.Writer, stdin io.Reader, statePath string, args []string) 
 		} else {
 			fmt.Fprintln(w, "send it to the router's bot after pressing Start (the bot's name shows in `owner-bot status` once the router has reached Telegram)")
 		}
-		fmt.Fprintf(w, "it works for %d minutes from when the router first reads it, once\n", int(bindCodeLife.Minutes()))
+		fmt.Fprintf(w, "it works once, for %d minutes\n", int(bindCodeLife.Minutes()))
 		return nil
 
 	case "status", "":

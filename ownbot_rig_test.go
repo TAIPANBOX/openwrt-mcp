@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 // testBotToken is the shape of a token and no bot's.
@@ -113,9 +114,13 @@ type tgStandIn struct {
 	deleted []int64
 	asked   []int64 // deletions asked for, answered or not
 
-	polling atomic.Int32  // getUpdates calls open now
-	delGate chan struct{} // while not nil, a deleteMessage waits for it to close
+	polling atomic.Int32           // getUpdates calls open now
+	delGate chan struct{}          // while not nil, a deleteMessage waits for it to close
+	refuse  func(text string) bool // while it says so, sendMessage refuses that text
 }
+
+// unitsOf is a text's length as Telegram counts it: UTF-16 units.
+func unitsOf(s string) int { return len(utf16.Encode([]rune(s))) }
 
 func newTGStandIn(t *testing.T, cert tls.Certificate) *tgStandIn {
 	t.Helper()
@@ -209,6 +214,13 @@ func (st *tgStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.calls = append(st.calls, tgCall{method, p})
+	// Telegram's own rule: a text over 4096 UTF-16 units is refused.
+	if t, ok := p["text"].(string); ok && (method == "sendMessage" || method == "editMessageText") &&
+		(unitsOf(t) > 4096 || (method == "sendMessage" && st.refuse != nil && st.refuse(t))) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: message is too long"}`)
+		return
+	}
 	switch method {
 	case "getMe":
 		st.reply(w, map[string]any{"id": 999, "is_bot": true, "first_name": "Router", "username": "router_test_bot"})
