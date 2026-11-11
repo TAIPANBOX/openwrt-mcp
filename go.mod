@@ -2,7 +2,7 @@ module github.com/GlassOnTin/openwrt-mcp
 
 go 1.27
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
